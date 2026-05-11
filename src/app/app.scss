@@ -1,0 +1,80 @@
+:host {
+  display: block;
+}
+
+.app-page {
+  min-height: 100dvh;
+  padding: 1rem;
+}
+
+.auth-shell {
+  min-height: calc(100dvh - 2rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-card {
+  width: min(100%, 440px);
+}
+
+.auth-card h1 {
+  margin: 0;
+}
+
+.auth-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.auth-form {
+  margin-top: 1rem;
+}
+
+.topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.topbar-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.topbar-user small {
+  color: #6b7280;
+}
+
+.topbar-logout {
+  min-width: 110px;
+}
+
+@media (max-width: 640px) {
+  .app-page {
+    padding: 0.85rem;
+  }
+
+  .auth-shell {
+    min-height: calc(100dvh - 1.7rem);
+    align-items: stretch;
+  }
+
+  .auth-card {
+    margin: auto 0;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    justify-content: space-between;
+    margin-left: 0;
+  }
+
+  .topbar-user {
+    align-items: flex-start;
+  }
+}

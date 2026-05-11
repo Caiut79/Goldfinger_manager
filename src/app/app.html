@@ -1,0 +1,930 @@
+<div class="app-page">
+  @if (feedback(); as currentFeedback) {
+    <section class="feedback" [class.feedback-error]="currentFeedback.type === 'error'">
+      <p>{{ currentFeedback.message }}</p>
+    </section>
+  }
+
+  @if (!isAuthReady()) {
+    <section class="auth-shell">
+      <article class="card auth-card empty-state">
+        <p>Caricamento accesso in corso...</p>
+      </article>
+    </section>
+  } @else if (!isAuthenticated()) {
+    <section class="auth-shell">
+      <article class="card auth-card">
+        <p class="eyebrow">Accesso</p>
+        <h1>{{ title }}</h1>
+        <p class="section-copy">Entra con email e password, oppure crea un account in pochi secondi.</p>
+
+        <div class="auth-switch">
+          <button
+            class="button"
+            type="button"
+            [class.button-primary]="authMode() === 'sign-in'"
+            [class.button-secondary]="authMode() !== 'sign-in'"
+            (click)="setAuthMode('sign-in')"
+          >
+            Accedi
+          </button>
+          <button
+            class="button"
+            type="button"
+            [class.button-primary]="authMode() === 'sign-up'"
+            [class.button-secondary]="authMode() !== 'sign-up'"
+            (click)="setAuthMode('sign-up')"
+          >
+            Registrati
+          </button>
+        </div>
+
+        <form class="form-grid auth-form" (ngSubmit)="submitAuth()">
+          <label class="field">
+            <span>Email</span>
+            <input
+              type="email"
+              name="authEmail"
+              [(ngModel)]="authForm.email"
+              placeholder="nome@email.it"
+              autocomplete="email"
+              required
+            />
+          </label>
+
+          <label class="field">
+            <span>Password</span>
+            <input
+              type="password"
+              name="authPassword"
+              [(ngModel)]="authForm.password"
+              autocomplete="current-password"
+              required
+            />
+          </label>
+
+          @if (authMode() === 'sign-up') {
+            <label class="field">
+              <span>Conferma password</span>
+              <input
+                type="password"
+                name="authConfirmPassword"
+                [(ngModel)]="authForm.confirmPassword"
+                autocomplete="new-password"
+                required
+              />
+            </label>
+          }
+
+          <button class="button button-primary field-full" type="submit" [disabled]="isAuthProcessing()">
+            {{
+              isAuthProcessing()
+                ? 'Attendere...'
+                : authMode() === 'sign-up'
+                  ? 'Crea account'
+                  : 'Accedi'
+            }}
+          </button>
+        </form>
+      </article>
+    </section>
+  } @else {
+    <div class="app-shell">
+      @if (isSidebarOpen()) {
+        <button class="sidebar-backdrop" type="button" (click)="closeSidebar()" aria-label="Chiudi menu"></button>
+      }
+
+      <aside class="sidebar" [class.sidebar-open]="isSidebarOpen()">
+        <div class="sidebar-brand">
+          <p class="eyebrow">Mini app</p>
+          <h1>{{ title }}</h1>
+        </div>
+
+        <nav class="sidebar-nav">
+          @for (item of menuItems; track trackBySection($index, item)) {
+            <button
+              class="nav-link"
+              type="button"
+              [class.nav-link-active]="currentSection() === item.id"
+              (click)="openSection(item.id)"
+            >
+              {{ item.label }}
+            </button>
+          }
+        </nav>
+      </aside>
+
+      <main class="app-main">
+        <header class="topbar">
+          <button class="menu-button" type="button" (click)="toggleSidebar()" aria-label="Apri menu">
+            ☰
+          </button>
+
+          <div>
+            <p class="eyebrow">Goldfinger Manager</p>
+            <h2>{{ currentSectionLabel() }}</h2>
+          </div>
+
+          <div class="topbar-actions">
+            <div class="topbar-user">
+              <small>Connesso</small>
+              <strong>{{ currentUserEmail() }}</strong>
+            </div>
+
+            <button class="button button-secondary topbar-logout" type="button" (click)="logout()" [disabled]="isAuthProcessing()">
+              {{ isAuthProcessing() ? 'Attendere...' : 'Logout' }}
+            </button>
+          </div>
+        </header>
+
+        @if (isLoading()) {
+          <section class="card empty-state">
+            <p>Caricamento dati in corso...</p>
+          </section>
+        } @else {
+      @if (currentSection() === 'dashboard') {
+        <section class="section-stack">
+          <article class="card hero-card">
+            <p class="eyebrow">Panoramica</p>
+            <h3>Controllo rapido del negozio</h3>
+            <p class="section-copy">
+              Consulta incassi, ultimi movimenti e vai subito alle aree operative dal menu laterale.
+            </p>
+          </article>
+
+          <section class="stats-grid">
+            <article class="card stat-card">
+              <span class="stat-label">Oggi</span>
+              <strong>{{ todayTotal() | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+            </article>
+
+            <article class="card stat-card">
+              <span class="stat-label">{{ currentMonthLabel() }}</span>
+              <strong>{{ currentMonthTotal() | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+            </article>
+
+            <article class="card stat-card">
+              <span class="stat-label">Totale regolare</span>
+              <strong>{{ totalRegular() | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+            </article>
+
+            <article class="card stat-card">
+              <span class="stat-label">Totale test</span>
+              <strong>{{ totalTest() | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+            </article>
+          </section>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Ultimi movimenti</p>
+                <h3>Incassi recenti</h3>
+              </div>
+
+              <button class="button button-primary" type="button" (click)="openSection('incasso')">
+                Nuovo incasso
+              </button>
+            </div>
+
+            <div class="list-block">
+              @if (recentSales().length) {
+                @for (sale of recentSales(); track trackBySale($index, sale)) {
+                  <div class="list-row list-row-sale">
+                    <div>
+                      <strong>{{ getStaffLabel(sale.staffMemberId) }}</strong>
+                      <p>
+                        {{ sale.saleDate | date: 'dd/MM/yyyy' : '' : locale }} · Totale
+                        {{ sale.regularAmount + sale.testAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}
+                      </p>
+                    </div>
+
+                    <button class="button button-ghost" type="button" (click)="deleteDailySale(sale)">
+                      Elimina
+                    </button>
+                  </div>
+                }
+              } @else {
+                <p class="empty-copy">Nessun incasso registrato.</p>
+              }
+            </div>
+          </article>
+        </section>
+      }
+
+      @if (currentSection() === 'incasso') {
+        <section class="section-stack">
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Operativita</p>
+                <h3>Registra incasso giornaliero</h3>
+              </div>
+            </div>
+
+            @if (activeStaffMembers().length) {
+              <form class="form-grid" (ngSubmit)="addDailySale()">
+                <label class="field field-date-button-mobile">
+                  <span>Data</span>
+                  <input class="date-input-button" type="date" name="saleDate" [(ngModel)]="saleForm.saleDate" required />
+                </label>
+
+                <label class="field">
+                  <span>Persona</span>
+                  <select name="staffMemberId" [(ngModel)]="saleForm.staffMemberId" required>
+                    <option value="">Seleziona</option>
+                    @for (staffMember of activeStaffMembers(); track trackByStaffMember($index, staffMember)) {
+                      <option [value]="staffMember.id">
+                        {{ staffMember.fullName }} - {{ getRoleLabel(staffMember.role) }}
+                      </option>
+                    }
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>Regolare</span>
+                  <input type="number" name="regularAmount" [(ngModel)]="saleForm.regularAmount" min="0" step="0.01" />
+                </label>
+
+                <label class="field">
+                  <span>Test</span>
+                  <input type="number" name="testAmount" [(ngModel)]="saleForm.testAmount" min="0" step="0.01" />
+                </label>
+
+                <label class="field field-full">
+                  <span>Note</span>
+                  <textarea
+                    name="notes"
+                    [(ngModel)]="saleForm.notes"
+                    rows="3"
+                    placeholder="Annotazioni facoltative"
+                  ></textarea>
+                </label>
+
+                <button class="button button-primary field-full" type="submit" [disabled]="isSavingSale()">
+                  {{ isSavingSale() ? 'Salvataggio...' : 'Salva incasso' }}
+                </button>
+              </form>
+            } @else {
+              <p class="empty-copy">Prima aggiungi il personale da Impostazioni.</p>
+            }
+          </article>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Storico</p>
+                <h3>Ultimi inserimenti</h3>
+              </div>
+            </div>
+
+            <div class="list-block">
+              @if (orderedSales().length) {
+                @for (sale of orderedSales().slice(0, 8); track trackBySale($index, sale)) {
+                  <div class="list-row list-row-sale">
+                    <div>
+                      <strong>{{ getStaffLabel(sale.staffMemberId) }}</strong>
+                      <p>
+                        {{ sale.saleDate | date: 'dd/MM/yyyy' : '' : locale }} · Regolare
+                        {{ sale.regularAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }} · Test
+                        {{ sale.testAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}
+                      </p>
+                    </div>
+
+                    <button class="button button-ghost" type="button" (click)="deleteDailySale(sale)">
+                      Elimina
+                    </button>
+                  </div>
+                }
+              } @else {
+                <p class="empty-copy">Qui compariranno gli ultimi incassi registrati.</p>
+              }
+            </div>
+          </article>
+        </section>
+      }
+
+      @if (currentSection() === 'report') {
+        <section class="section-stack">
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Report</p>
+                <h3>Export del mese</h3>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>Mese</span>
+                <select name="reportMonth" [(ngModel)]="reportFilter.month">
+                  @for (month of reportMonthOptions; track month.value) {
+                    <option [value]="month.value">{{ month.label }}</option>
+                  }
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Anno</span>
+                <select name="reportYear" [(ngModel)]="reportFilter.year">
+                  @for (year of availableReportYears(); track year) {
+                    <option [value]="year">{{ year }}</option>
+                  }
+                </select>
+              </label>
+
+              <button class="button button-primary field-full" type="button" (click)="exportPdf()">
+                Esporta PDF completo
+              </button>
+            </div>
+
+            <div class="stats-grid stats-grid-compact">
+              <article class="summary-box">
+                <span class="stat-label">Movimenti</span>
+                <strong>{{ filteredReportSales().length }}</strong>
+              </article>
+
+              <article class="summary-box">
+                <span class="stat-label">{{ reportPeriodLabel() }}</span>
+                <strong>{{ filteredReportTotal() | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+              </article>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Elenco del mese</p>
+                <h3>{{ reportPeriodLabel() }}</h3>
+              </div>
+            </div>
+
+            <div class="list-block">
+              @if (monthlySales().length) {
+                @for (sale of monthlySales(); track trackBySale($index, sale)) {
+                  <div class="list-row list-row-sale">
+                    <div>
+                      <strong>{{ getStaffLabel(sale.staffMemberId) }}</strong>
+                      <p>
+                        {{ sale.saleDate | date: 'dd/MM/yyyy' : '' : locale }} · Regolare
+                        {{ sale.regularAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }} · Test
+                        {{ sale.testAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}
+                      </p>
+                    </div>
+
+                    <strong>
+                      {{ sale.regularAmount + sale.testAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}
+                    </strong>
+                  </div>
+                }
+              } @else {
+                <p class="empty-copy">Nessun incasso presente per {{ reportPeriodLabel() }}.</p>
+              }
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Andamento</p>
+                <h3>Incassi per persona nel mese</h3>
+              </div>
+            </div>
+
+            <div class="report-list">
+              @if (reportRows().length) {
+                @for (row of reportRows(); track trackByStaffMember($index, row.staffMember)) {
+                  <div class="report-card">
+                    <div class="report-head">
+                      <div>
+                        <strong>{{ row.staffMember.fullName }}</strong>
+                        <p>
+                          {{ getRoleLabel(row.staffMember.role) }}
+                          @if (!row.staffMember.isActive) {
+                            · Nascosto
+                          }
+                        </p>
+                      </div>
+                      <strong>{{ row.totalAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+                    </div>
+
+                    <div class="report-bar">
+                      <span [style.width]="getBarWidth(row.totalAmount)"></span>
+                    </div>
+
+                    <div class="report-metrics">
+                      <span>Regolare {{ row.totalRegular | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</span>
+                      <span>Test {{ row.totalTest | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</span>
+                      <span>Media {{ row.averageDaily | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</span>
+                      <span>Giorni {{ row.daysWorked }}</span>
+                    </div>
+
+                    <button class="button button-secondary report-export-button" type="button" (click)="exportPdf(row.staffMember)">
+                      PDF {{ row.staffMember.fullName }}
+                    </button>
+                  </div>
+                }
+              } @else {
+                <p class="empty-copy">Nessun dato disponibile nel periodo selezionato.</p>
+              }
+            </div>
+          </article>
+        </section>
+      }
+
+      @if (currentSection() === 'presenze') {
+        <section class="section-stack">
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Presenze</p>
+                <h3>Clicca un giorno nel calendario</h3>
+              </div>
+            </div>
+
+            @if (activeEmployeeStaffMembers().length) {
+              <p class="empty-copy">
+                Seleziona dipendente, mese e anno, poi clicca sulla casella del giorno per inserire o modificare
+                `lavoro`, `permesso`, `ferie` o `malattia`.
+              </p>
+            } @else {
+              <p class="empty-copy">Prima aggiungi almeno un dipendente nelle Impostazioni.</p>
+            }
+          </article>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Calendario mensile</p>
+                <h3>Giorni lavorativi e festivi</h3>
+              </div>
+            </div>
+
+            @if (employeeStaffMembers().length) {
+              <div class="form-grid">
+                <label class="field">
+                  <span>Dipendente</span>
+                  <select
+                    name="attendanceFilterStaffMemberId"
+                    [(ngModel)]="attendanceFilter.staffMemberId"
+                    (ngModelChange)="onAttendanceFilterStaffChange()"
+                  >
+                    @for (staffMember of employeeStaffMembers(); track trackByStaffMember($index, staffMember)) {
+                      <option [value]="staffMember.id">
+                        {{ staffMember.fullName }}
+                        @if (!staffMember.isActive) {
+                          · Nascosto
+                        }
+                      </option>
+                    }
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>Mese</span>
+                  <select
+                    name="attendanceFilterMonth"
+                    [(ngModel)]="attendanceFilter.month"
+                    (ngModelChange)="onAttendanceFilterPeriodChange()"
+                  >
+                    @for (month of reportMonthOptions; track month.value) {
+                      <option [value]="month.value">{{ month.label }}</option>
+                    }
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>Anno</span>
+                  <select
+                    name="attendanceFilterYear"
+                    [(ngModel)]="attendanceFilter.year"
+                    (ngModelChange)="onAttendanceFilterPeriodChange()"
+                  >
+                    @for (year of availableAttendanceYears(); track year) {
+                      <option [value]="year">{{ year }}</option>
+                    }
+                  </select>
+                </label>
+
+                <button class="button button-primary" type="button" (click)="exportAttendancePdf()">
+                  PDF mensile presenze
+                </button>
+              </div>
+
+              <div class="stats-grid stats-grid-compact stats-grid-presenze">
+                <article class="summary-box">
+                  <span class="stat-label">Ore lavorate</span>
+                  <strong>{{ attendanceSummary().totalWorkedHours }}</strong>
+                </article>
+
+                <article class="summary-box">
+                  <span class="stat-label">Giorni lavoro</span>
+                  <strong>{{ attendanceSummary().workDays }}</strong>
+                </article>
+
+                <article class="summary-box">
+                  <span class="stat-label">Festivi</span>
+                  <strong>{{ attendanceSummary().holidayDays }}</strong>
+                </article>
+
+                <article class="summary-box">
+                  <span class="stat-label">Ferie</span>
+                  <strong>{{ attendanceSummary().vacationDays }}</strong>
+                </article>
+
+                <article class="summary-box">
+                  <span class="stat-label">Permessi</span>
+                  <strong>{{ attendanceSummary().permitDays }}</strong>
+                </article>
+
+                <article class="summary-box">
+                  <span class="stat-label">Malattia</span>
+                  <strong>{{ attendanceSummary().sickDays }}</strong>
+                </article>
+              </div>
+
+              <article class="card card-embedded">
+                <div class="section-heading">
+                  <div>
+                    <p class="eyebrow">Tutti i dipendenti</p>
+                    <h3>Mensile del mese selezionato</h3>
+                  </div>
+                </div>
+
+                <div class="list-block">
+                  @if (attendanceSummaryByStaff().length) {
+                    @for (row of attendanceSummaryByStaff(); track trackByStaffMember($index, row.staffMember)) {
+                      <div class="list-row list-row-sale">
+                        <div>
+                          <strong>{{ row.staffMember.fullName }}</strong>
+                          <p>
+                            Ore {{ row.summary.totalWorkedHours }} · Lavoro {{ row.summary.workDays }} · Ferie
+                            {{ row.summary.vacationDays }} · Permessi {{ row.summary.permitDays }} · Malattia
+                            {{ row.summary.sickDays }}
+                          </p>
+                        </div>
+                      </div>
+                    }
+                  } @else {
+                    <p class="empty-copy">Nessun dipendente disponibile nel mese selezionato.</p>
+                  }
+                </div>
+              </article>
+
+              <div class="attendance-calendar-wrapper">
+                <div class="attendance-calendar">
+                  @for (_ of [].constructor(attendanceCalendarDays().monthStartWeekday); track $index) {
+                    <div class="attendance-calendar-spacer"></div>
+                  }
+
+                  @for (day of attendanceCalendarDays().days; track day.isoDate) {
+                    <button
+                      [class]="getAttendanceDayCardClass(day.isoDate, day.entry)"
+                      type="button"
+                      (click)="selectAttendanceDay(day.isoDate)"
+                    >
+                      <span class="attendance-day-header">{{ day.weekdayLabel }}</span>
+                      <strong>{{ day.dayNumber }}</strong>
+                      @if (day.entry) {
+                        <small>{{ getAttendanceTypeLabel(day.entry.entryType) }}</small>
+                        <small>{{ day.entry.workedHours }}h</small>
+                      } @else if (day.isCompanyClosed) {
+                        <small>Chiuso</small>
+                    } @else if (day.isNationalHoliday) {
+                      <small>Festivo nazionale</small>
+                      } @else if (day.plannedShift?.isWorking) {
+                        <small>{{ day.plannedShift?.hours }}h previste</small>
+                      } @else {
+                        <small>Non lavorativo</small>
+                      }
+                    </button>
+                  }
+                </div>
+              </div>
+
+              <div class="attendance-day-list">
+                @for (day of attendanceCalendarDays().days; track day.isoDate) {
+                  <button
+                    [class]="getAttendanceDayCardClass(day.isoDate, day.entry) + ' attendance-day-row'"
+                    type="button"
+                    (click)="selectAttendanceDay(day.isoDate)"
+                  >
+                    <span class="attendance-day-row-date">
+                      <small class="attendance-day-header">{{ day.weekdayLabel }}</small>
+                      <strong>{{ day.dayNumber }}</strong>
+                    </span>
+                    <span>{{ getAttendanceDayListCopy(day) }}</span>
+                  </button>
+                }
+              </div>
+            } @else {
+              <p class="empty-copy">Nessun dipendente disponibile per il riepilogo presenze.</p>
+            }
+          </article>
+        </section>
+
+        @if (isAttendanceModalOpen()) {
+          <div class="modal-backdrop" (click)="closeAttendanceModal()"></div>
+          <section class="modal-panel">
+            <article class="card">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Evento Giornaliero</p>
+                  <h3>{{ attendanceForm.entryDate | date: 'dd/MM/yyyy' : '' : locale }}</h3>
+                </div>
+
+                <button class="button button-ghost" type="button" (click)="closeAttendanceModal()">
+                  Chiudi
+                </button>
+              </div>
+
+              <form class="form-grid" (ngSubmit)="addAttendanceEntry()">
+                <label class="field">
+                  <span>Dipendente</span>
+                  <select
+                    name="attendanceStaffMemberId"
+                    [(ngModel)]="attendanceForm.staffMemberId"
+                    (ngModelChange)="onAttendanceStaffChange()"
+                    required
+                  >
+                    <option value="">Seleziona</option>
+                    @for (staffMember of activeEmployeeStaffMembers(); track trackByStaffMember($index, staffMember)) {
+                      <option [value]="staffMember.id">{{ staffMember.fullName }}</option>
+                    }
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>Voce</span>
+                  <select
+                    name="attendanceEntryType"
+                    [(ngModel)]="attendanceForm.entryType"
+                    (ngModelChange)="onAttendanceTypeChange()"
+                  >
+                    @for (option of attendanceTypeOptions; track option.value) {
+                      <option [value]="option.value">{{ option.label }}</option>
+                    }
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>Da</span>
+                  <input type="date" name="attendanceEntryDate" [(ngModel)]="attendanceForm.entryDate" required />
+                </label>
+
+                @if (attendanceForm.entryType === 'ferie' || attendanceForm.entryType === 'malattia') {
+                  <label class="field">
+                    <span>A</span>
+                    <input type="date" name="attendanceEndDate" [(ngModel)]="attendanceForm.endDate" required />
+                  </label>
+                } @else {
+                  <label class="field">
+                    <span>
+                      @if (attendanceForm.entryType === 'permesso') {
+                        Ore permesso
+                      } @else if (attendanceForm.entryType === 'lavoro') {
+                        Ore lavorate
+                      } @else {
+                        Ore
+                      }
+                    </span>
+                    <input
+                      type="number"
+                      name="attendanceWorkedHours"
+                      [(ngModel)]="attendanceForm.workedHours"
+                      min="0"
+                      step="0.5"
+                      [disabled]="attendanceForm.entryType === 'festivo'"
+                    />
+                  </label>
+                }
+
+                <label class="field field-full">
+                  <span>Nota / giustifica</span>
+                  <textarea
+                    name="attendanceNotes"
+                    [(ngModel)]="attendanceForm.notes"
+                    rows="3"
+                    placeholder="Es. certificato medico"
+                  ></textarea>
+                </label>
+
+                <div class="field-full row-actions">
+                  <button class="button button-primary" type="submit" [disabled]="isSavingAttendance()">
+                    {{
+                      isSavingAttendance()
+                        ? 'Salvataggio...'
+                        : editingAttendanceEntryId()
+                          ? 'Aggiorna presenza'
+                          : 'Salva presenza'
+                    }}
+                  </button>
+
+                  @if (editingAttendanceEntryId()) {
+                    <button class="button button-secondary" type="button" (click)="cancelAttendanceEdit()">
+                      Annulla modifica
+                    </button>
+                  }
+                </div>
+              </form>
+            </article>
+          </section>
+        }
+      }
+
+      @if (currentSection() === 'impostazioni') {
+        <section class="section-stack">
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Azienda</p>
+                <h3>Giorni di chiusura</h3>
+              </div>
+            </div>
+
+            <div class="weekday-grid">
+              @for (weekday of weekdayOptions; track weekday.key) {
+                <button
+                  class="weekday-chip"
+                  type="button"
+                  [class.weekday-chip-active]="isCompanyClosureDay(weekday.key)"
+                  (click)="toggleCompanyClosureDay(weekday.key)"
+                >
+                  {{ weekday.label }}
+                </button>
+              }
+            </div>
+
+            <button class="button button-primary settings-save-button" type="button" (click)="saveCompanySettings()" [disabled]="isSavingSettings()">
+              {{ isSavingSettings() ? 'Salvataggio...' : 'Salva chiusure aziendali' }}
+            </button>
+          </article>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Impostazioni</p>
+                <h3>Gestione personale</h3>
+              </div>
+            </div>
+
+            <form class="form-grid" (ngSubmit)="saveStaffMember()">
+              <label class="field">
+                <span>Nome e cognome</span>
+                <input
+                  type="text"
+                  name="fullName"
+                  [(ngModel)]="staffForm.fullName"
+                  placeholder="Es. Martina Rossi"
+                  required
+                />
+              </label>
+
+              <label class="field">
+                <span>Ruolo</span>
+                <select name="role" [(ngModel)]="staffForm.role">
+                  <option value="titolare">Titolare</option>
+                  <option value="dipendente">Dipendente</option>
+                </select>
+              </label>
+
+              <label class="field">
+                <span>Ore giornaliere</span>
+                <input
+                  type="number"
+                  name="defaultDailyHours"
+                  [(ngModel)]="staffForm.defaultDailyHours"
+                  min="0"
+                  step="0.5"
+                />
+              </label>
+
+              <div class="field field-full">
+                <span>Turni settimanali</span>
+                <div class="weekly-shift-grid">
+                  @for (weekday of weekdayOptions; track weekday.key) {
+                    <div class="weekly-shift-row" [class.weekly-shift-row-closed]="isCompanyClosureDay(weekday.key)">
+                      <div class="weekly-shift-copy">
+                        <strong>{{ weekday.label }}</strong>
+                        <small>
+                          @if (isCompanyClosureDay(weekday.key)) {
+                            Chiusura aziendale
+                          } @else if (staffForm.weeklySchedule[weekday.key].isWorking) {
+                            Giorno lavorativo
+                          } @else {
+                            Giorno non lavorativo
+                          }
+                        </small>
+                      </div>
+
+                      <label class="weekly-shift-toggle">
+                        <input
+                          type="checkbox"
+                          [checked]="staffForm.weeklySchedule[weekday.key].isWorking"
+                          [disabled]="isCompanyClosureDay(weekday.key)"
+                          (change)="toggleStaffWorkingDay(weekday.key)"
+                        />
+                        <span>Lavorativo</span>
+                      </label>
+
+                      <label class="field weekly-shift-hours">
+                        <span>Ore</span>
+                        <input
+                          type="number"
+                          [name]="'shift-' + weekday.key"
+                          [ngModel]="staffForm.weeklySchedule[weekday.key].hours"
+                          (ngModelChange)="updateStaffWorkingHours(weekday.key, $event)"
+                          min="0"
+                          step="0.5"
+                          [disabled]="isCompanyClosureDay(weekday.key) || !staffForm.weeklySchedule[weekday.key].isWorking"
+                        />
+                      </label>
+                    </div>
+                  }
+                </div>
+              </div>
+
+              <button class="button button-primary" type="submit" [disabled]="isSavingStaff()">
+                {{
+                  isSavingStaff()
+                    ? 'Salvataggio...'
+                    : editingStaffMemberId()
+                      ? 'Salva modifiche'
+                      : 'Aggiungi personale'
+                }}
+              </button>
+
+              @if (editingStaffMemberId()) {
+                <button class="button button-secondary" type="button" (click)="cancelStaffEdit()">
+                  Annulla modifica
+                </button>
+              }
+            </form>
+          </article>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Attivi</p>
+                <h3>Personale visibile</h3>
+              </div>
+            </div>
+
+            <div class="list-block">
+              @if (activeStaffMembers().length) {
+                @for (staffMember of activeStaffMembers(); track trackByStaffMember($index, staffMember)) {
+                  <div class="list-row">
+                    <div>
+                      <strong>{{ staffMember.fullName }}</strong>
+                      <p>{{ getRoleLabel(staffMember.role) }} · {{ staffMember.defaultDailyHours }}h standard</p>
+                    </div>
+
+                    <div class="row-actions">
+                      <button class="button button-secondary" type="button" (click)="startEditStaffMember(staffMember)">
+                        Modifica
+                      </button>
+                      <button class="button button-ghost" type="button" (click)="hideOrDeleteStaffMember(staffMember)">
+                        {{ getStaffActionLabel(staffMember) }}
+                      </button>
+                    </div>
+                  </div>
+                }
+              } @else {
+                <p class="empty-copy">Nessun nominativo attivo.</p>
+              }
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Nascosti</p>
+                <h3>Storico personale</h3>
+              </div>
+            </div>
+
+            <div class="list-block">
+              @if (hiddenStaffMembers().length) {
+                @for (staffMember of hiddenStaffMembers(); track trackByStaffMember($index, staffMember)) {
+                  <div class="list-row">
+                    <div>
+                      <strong>{{ staffMember.fullName }}</strong>
+                      <p>{{ getRoleLabel(staffMember.role) }} · {{ staffMember.defaultDailyHours }}h standard · Nascosto</p>
+                    </div>
+
+                    <button class="button button-secondary" type="button" (click)="restoreStaffMember(staffMember)">
+                      Ripristina
+                    </button>
+                  </div>
+                }
+              } @else {
+                <p class="empty-copy">Nessun nominativo nascosto.</p>
+              }
+            </div>
+          </article>
+        </section>
+      }
+        }
+      </main>
+    </div>
+  }
+</div>
