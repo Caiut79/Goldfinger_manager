@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { createClient, Session, SupabaseClient } from '@supabase/supabase-js';
+import { createClient, RealtimeChannel, Session, SupabaseClient } from '@supabase/supabase-js';
 
 import { environment } from '../../environments/environment';
 import {
@@ -63,6 +63,7 @@ export class StoreService {
   private readonly supabase: SupabaseClient | null;
   private isRemoteAvailable: boolean;
   private currentUserId: string | null = null;
+  private dataChangesChannel: RealtimeChannel | null = null;
 
   constructor() {
     this.supabase =
@@ -151,6 +152,8 @@ export class StoreService {
       return;
     }
 
+    this.unsubscribeFromDataChanges();
+
     const { error } = await this.supabase.auth.signOut();
 
     if (error) {
@@ -158,6 +161,57 @@ export class StoreService {
     }
 
     this.currentUserId = null;
+  }
+
+  async subscribeToDataChanges(callback: () => void): Promise<{ unsubscribe: () => void }> {
+    if (!this.supabase || !this.isRemoteAvailable) {
+      return {
+        unsubscribe: () => undefined,
+      };
+    }
+
+    const userId = await this.getCurrentUserId();
+    this.unsubscribeFromDataChanges();
+
+    const channel = this.supabase.channel(`goldfinger-manager-sync-${userId}`);
+    const handleChange = () => {
+      callback();
+    };
+
+    channel
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'staff_members',
+        filter: `user_id=eq.${userId}`,
+      }, handleChange)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'daily_sales',
+        filter: `user_id=eq.${userId}`,
+      }, handleChange)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'attendance_entries',
+        filter: `user_id=eq.${userId}`,
+      }, handleChange)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'app_settings',
+        filter: 'id=eq.global',
+      }, handleChange)
+      .subscribe();
+
+    this.dataChangesChannel = channel;
+
+    return {
+      unsubscribe: () => {
+        this.unsubscribeFromDataChanges(channel);
+      },
+    };
   }
 
   async getAppSettings(): Promise<AppSettings> {
@@ -765,6 +819,7 @@ export class StoreService {
 
   private handleSupabaseError(message: string, error: { code?: string } | null): void {
     this.isRemoteAvailable = false;
+    this.unsubscribeFromDataChanges();
 
     if (error?.code === 'PGRST205' || error?.code === 'PGRST204') {
       console.warn(`${message} Passaggio automatico all'archivio locale.`, error);
@@ -772,6 +827,24 @@ export class StoreService {
     }
 
     console.error(message, error);
+  }
+
+  private unsubscribeFromDataChanges(channelToRemove?: RealtimeChannel): void {
+    if (!this.supabase) {
+      return;
+    }
+
+    const targetChannel = channelToRemove ?? this.dataChangesChannel;
+
+    if (!targetChannel) {
+      return;
+    }
+
+    void this.supabase.removeChannel(targetChannel);
+
+    if (!channelToRemove || this.dataChangesChannel === channelToRemove) {
+      this.dataChangesChannel = null;
+    }
   }
 
   private async getCurrentUserId(): Promise<string> {

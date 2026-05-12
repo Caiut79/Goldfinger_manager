@@ -4,6 +4,9 @@
 
 .app-page {
   min-height: 100dvh;
+}
+
+.app-page-auth {
   padding: 1rem;
 }
 
@@ -33,6 +36,46 @@
   margin-top: 1rem;
 }
 
+.password-field-control {
+  position: relative;
+}
+
+.password-field-control input {
+  padding-right: 3.25rem;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.65rem;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #6b7280;
+}
+
+.password-toggle svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.password-toggle:hover {
+  background: rgba(99, 102, 241, 0.08);
+  color: #374151;
+}
+
 .topbar-actions {
   margin-left: auto;
   display: flex;
@@ -44,10 +87,20 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  min-width: 0;
+  max-width: 170px;
 }
 
 .topbar-user small {
   color: #6b7280;
+}
+
+.topbar-user strong {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-logout {
@@ -55,7 +108,7 @@
 }
 
 @media (max-width: 640px) {
-  .app-page {
+  .app-page-auth {
     padding: 0.85rem;
   }
 
@@ -69,12 +122,27 @@
   }
 
   .topbar-actions {
-    width: 100%;
+    width: min(58%, 210px);
     justify-content: space-between;
     margin-left: 0;
+    gap: 0.55rem;
+    min-width: 0;
   }
 
   .topbar-user {
     align-items: flex-start;
+    max-width: 122px;
+  }
+
+  .topbar-user small {
+    font-size: 0.78rem;
+  }
+
+  .topbar-user strong {
+    font-size: 0.95rem;
+  }
+
+  .topbar-logout {
+    min-width: 88px;
   }
 }

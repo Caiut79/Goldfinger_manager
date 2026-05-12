@@ -9,6 +9,9 @@ describe('App', () => {
     onAuthStateChange: () => ({
       unsubscribe: () => undefined,
     }),
+    subscribeToDataChanges: async () => ({
+      unsubscribe: () => undefined,
+    }),
   };
 
   beforeEach(async () => {
