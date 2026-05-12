@@ -1,6 +1,6 @@
 import { CommonModule, CurrencyPipe, DatePipe, registerLocaleData } from '@angular/common';
 import localeIt from '@angular/common/locales/it';
-import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core';
+import { AfterViewChecked, Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Session } from '@supabase/supabase-js';
 
@@ -40,6 +40,57 @@ type AttendanceCalendarDay = {
 type StaffAttendanceMonthRow = {
   staffMember: StaffMember;
   summary: AttendanceSummary;
+  annualSummary: AttendanceSummary;
+};
+type ReportOverviewCard = {
+  staffMember: StaffMember;
+  totalAmount: number;
+  workedDays: number;
+  trendPercentage: number | null;
+  previousTotalAmount: number;
+};
+type ReportMonthlyPerformanceRow = {
+  monthKey: string;
+  label: string;
+  totalAmount: number;
+  regularAmount: number;
+  testAmount: number;
+  workedDays: number;
+  averageDaily: number;
+};
+type ReportDailyPerformanceRow = {
+  isoDate: string;
+  label: string;
+  totalAmount: number;
+  regularAmount: number;
+  testAmount: number;
+};
+type ReportAttendanceDetailRow = {
+  isoDate: string;
+  label: string;
+  typeLabel: string;
+  workedHours: number;
+  notes: string;
+  sourceLabel: string;
+};
+type ReportDistributionSlice = {
+  label: string;
+  value: number;
+  color: string;
+};
+type ReportDetailMetrics = {
+  totalAmount: number;
+  totalRegular: number;
+  totalTest: number;
+  averageDaily: number;
+  workedDays: number;
+  absenceDays: number;
+  productivityIndex: number;
+  plannedWorkingDays: number;
+  vacationAccrued: number;
+  vacationUsed: number;
+  permitDays: number;
+  sickDays: number;
 };
 
 @Component({
@@ -48,13 +99,19 @@ type StaffAttendanceMonthRow = {
   templateUrl: './app.html',
   styleUrl: './app.scss',
 })
-export class App implements OnInit, OnDestroy {
+export class App implements OnInit, OnDestroy, AfterViewChecked {
   private readonly storeService = inject(StoreService);
   private feedbackTimeoutId: ReturnType<typeof window.setTimeout> | null = null;
+  private remoteReloadTimeoutId: ReturnType<typeof window.setTimeout> | null = null;
   private readonly attendanceEditWindowDays = 3;
+  private reportDetailChartsRenderKey = '';
+  private reportChartLibraryPromise: Promise<typeof import('chart.js/auto')> | null = null;
+  private readonly reportChartInstances = new Map<string, { destroy: () => void; toBase64Image: () => string }>();
   private authSubscription: { unsubscribe: () => void } | null = null;
+  private dataSyncSubscription: { unsubscribe: () => void } | null = null;
   private loadedUserId: string | null = null;
   private loadingUserId: string | null = null;
+  private dataSyncUserId: string | null = null;
   private readonly currentDateTimerId = window.setInterval(() => {
     this.currentDate.set(this.toInputDate(new Date()));
   }, 60_000);
@@ -68,6 +125,8 @@ export class App implements OnInit, OnDestroy {
   protected readonly isAuthReady = signal(false);
   protected readonly isAuthProcessing = signal(false);
   protected readonly authMode = signal<AuthMode>('sign-in');
+  protected readonly showAuthPassword = signal(false);
+  protected readonly showAuthConfirmPassword = signal(false);
   protected readonly currentSection = signal<AppSection>('dashboard');
   protected readonly isSidebarOpen = signal(false);
   protected readonly feedback = signal<{ type: 'success' | 'error' | 'info'; message: string } | null>(
@@ -117,6 +176,13 @@ export class App implements OnInit, OnDestroy {
   protected readonly reportFilter = {
     month: this.today().slice(5, 7),
     year: String(new Date().getFullYear()),
+    startDate: `${this.today().slice(0, 8)}01`,
+    endDate: this.toInputDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)),
+  };
+  protected readonly selectedReportStaffMemberId = signal<string | null>(null);
+  protected readonly reportDetailFilter = {
+    startDate: `${this.today().slice(0, 8)}01`,
+    endDate: this.toInputDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0)),
   };
   protected readonly reportMonthOptions = [
     { value: '01', label: 'Gennaio' },
@@ -148,6 +214,8 @@ export class App implements OnInit, OnDestroy {
     notes: '',
   };
   protected readonly editingAttendanceEntryId = signal<string | null>(null);
+  protected readonly editingAttendanceEntryIds = signal<string[]>([]);
+  protected readonly selectedAttendanceStaffMemberId = signal('');
   protected readonly attendanceFilter = {
     month: this.today().slice(5, 7),
     year: String(new Date().getFullYear()),
@@ -193,7 +261,7 @@ export class App implements OnInit, OnDestroy {
   );
 
   protected readonly filteredReportSales = computed(() =>
-    this.filterSalesByMonth(this.orderedSales(), this.reportFilter.month, this.reportFilter.year),
+    this.filterSalesByDateRange(this.orderedSales(), this.reportFilter.startDate, this.reportFilter.endDate),
   );
 
   protected readonly filteredReportTotal = computed(() =>
@@ -255,9 +323,17 @@ export class App implements OnInit, OnDestroy {
   });
 
   protected readonly reportPeriodLabel = computed(() => {
+    if (!this.reportFilter.startDate || !this.reportFilter.endDate) {
+      return 'Periodo non selezionato';
+    }
+
+    if (this.isWholeSelectedMonthRange()) {
     const monthLabel =
       this.reportMonthOptions.find((month) => month.value === this.reportFilter.month)?.label ?? 'Mese';
-    return `${monthLabel} ${this.reportFilter.year}`;
+      return `${monthLabel} ${this.reportFilter.year}`;
+    }
+
+    return `${this.formatDate(this.reportFilter.startDate)} - ${this.formatDate(this.reportFilter.endDate)}`;
   });
 
   protected readonly attendancePeriodLabel = computed(() => {
@@ -302,18 +378,265 @@ export class App implements OnInit, OnDestroy {
 
   protected readonly monthlySales = computed(() => this.filteredReportSales());
 
+  protected readonly reportOverviewCards = computed<ReportOverviewCard[]>(() => {
+    const { startDate, endDate } = this.getMonthDateRangeFromIsoDate(this.today());
+    const previousMonthReference = this.shiftIsoDate(startDate, -1);
+    const previousRange = this.getMonthDateRangeFromIsoDate(previousMonthReference);
+
+    return this.staffMembers()
+      .filter((staffMember) => staffMember.isActive || this.hasStaffSales(staffMember.id))
+      .map((staffMember) => {
+        const currentSales = this.getSalesForStaffInRange(staffMember.id, startDate, endDate);
+        const previousSales = this.getSalesForStaffInRange(staffMember.id, previousRange.startDate, previousRange.endDate);
+        const totalAmount = this.sumSalesAmount(currentSales);
+        const previousTotalAmount = this.sumSalesAmount(previousSales);
+
+        return {
+          staffMember,
+          totalAmount,
+          workedDays: new Set(currentSales.map((sale) => sale.saleDate)).size,
+          trendPercentage: this.calculateTrendPercentage(totalAmount, previousTotalAmount),
+          previousTotalAmount,
+        };
+      })
+      .sort((left, right) => right.totalAmount - left.totalAmount || left.staffMember.fullName.localeCompare(right.staffMember.fullName));
+  });
+
+  protected readonly selectedReportStaffMember = computed<StaffMember | null>(() => {
+    const selectedStaffMemberId = this.selectedReportStaffMemberId();
+
+    if (!selectedStaffMemberId) {
+      return null;
+    }
+
+    return this.staffMembers().find((staffMember) => staffMember.id === selectedStaffMemberId) ?? null;
+  });
+
+  protected readonly reportDetailSales = computed<DailySale[]>(() => {
+    const selectedStaffMember = this.selectedReportStaffMember();
+
+    if (!selectedStaffMember) {
+      return [];
+    }
+
+    return this.getSalesForStaffInRange(
+      selectedStaffMember.id,
+      this.reportDetailFilter.startDate,
+      this.reportDetailFilter.endDate,
+    ).sort((left, right) => left.saleDate.localeCompare(right.saleDate));
+  });
+
+  protected readonly reportDetailAttendanceEntries = computed<EffectiveAttendanceEntry[]>(() => {
+    const selectedStaffMember = this.selectedReportStaffMember();
+
+    if (!selectedStaffMember) {
+      return [];
+    }
+
+    return this.buildAttendanceEntriesForRange(
+      selectedStaffMember.id,
+      this.reportDetailFilter.startDate,
+      this.reportDetailFilter.endDate,
+    ).sort((left, right) => left.entryDate.localeCompare(right.entryDate));
+  });
+
+  protected readonly reportDetailAttendanceSummary = computed<AttendanceSummary>(() =>
+    this.buildAttendanceSummary(this.reportDetailAttendanceEntries()),
+  );
+
+  protected readonly reportDetailMetrics = computed<ReportDetailMetrics>(() => {
+    const selectedStaffMember = this.selectedReportStaffMember();
+    const sales = this.reportDetailSales();
+    const attendanceSummary = this.reportDetailAttendanceSummary();
+    const totalAmount = this.sumSalesAmount(sales);
+    const workedDays = new Set(sales.map((sale) => sale.saleDate)).size;
+    const plannedWorkingDays = selectedStaffMember
+      ? this.getPlannedWorkingDaysInRange(
+          selectedStaffMember,
+          this.reportDetailFilter.startDate,
+          this.reportDetailFilter.endDate,
+        )
+      : 0;
+    const absenceDays = attendanceSummary.vacationDays + attendanceSummary.permitDays + attendanceSummary.sickDays;
+
+    return {
+      totalAmount,
+      totalRegular: sales.reduce((total, sale) => total + sale.regularAmount, 0),
+      totalTest: sales.reduce((total, sale) => total + sale.testAmount, 0),
+      averageDaily: workedDays > 0 ? totalAmount / workedDays : 0,
+      workedDays,
+      absenceDays,
+      productivityIndex: plannedWorkingDays > 0 ? (workedDays / plannedWorkingDays) * 100 : 0,
+      plannedWorkingDays,
+      vacationAccrued: selectedStaffMember
+        ? this.calculateVacationAccrual(selectedStaffMember, this.reportDetailFilter.startDate, this.reportDetailFilter.endDate)
+        : 0,
+      vacationUsed: attendanceSummary.vacationDays,
+      permitDays: attendanceSummary.permitDays,
+      sickDays: attendanceSummary.sickDays,
+    };
+  });
+
+  protected readonly reportDetailMonthlyRows = computed<ReportMonthlyPerformanceRow[]>(() => {
+    const salesByMonth = new Map<string, DailySale[]>();
+
+    for (const sale of this.reportDetailSales()) {
+      const monthKey = sale.saleDate.slice(0, 7);
+      const collection = salesByMonth.get(monthKey) ?? [];
+      collection.push(sale);
+      salesByMonth.set(monthKey, collection);
+    }
+
+    return [...salesByMonth.entries()]
+      .map(([monthKey, sales]) => {
+        const totalAmount = this.sumSalesAmount(sales);
+        const workedDays = new Set(sales.map((sale) => sale.saleDate)).size;
+        const monthDate = `${monthKey}-01`;
+
+        return {
+          monthKey,
+          label: new Intl.DateTimeFormat(this.locale, { month: 'long', year: 'numeric' }).format(new Date(monthDate)),
+          totalAmount,
+          regularAmount: sales.reduce((total, sale) => total + sale.regularAmount, 0),
+          testAmount: sales.reduce((total, sale) => total + sale.testAmount, 0),
+          workedDays,
+          averageDaily: workedDays > 0 ? totalAmount / workedDays : 0,
+        };
+      })
+      .sort((left, right) => left.monthKey.localeCompare(right.monthKey));
+  });
+
+  protected readonly reportDetailDailyRows = computed<ReportDailyPerformanceRow[]>(() =>
+    this.reportDetailSales().map((sale) => ({
+      isoDate: sale.saleDate,
+      label: this.formatDate(sale.saleDate),
+      totalAmount: sale.regularAmount + sale.testAmount,
+      regularAmount: sale.regularAmount,
+      testAmount: sale.testAmount,
+    })),
+  );
+
+  protected readonly reportDetailAttendanceRows = computed<ReportAttendanceDetailRow[]>(() =>
+    [...this.reportDetailAttendanceEntries()]
+      .sort((left, right) => right.entryDate.localeCompare(left.entryDate))
+      .map((entry) => ({
+        isoDate: entry.entryDate,
+        label: this.formatDate(entry.entryDate),
+        typeLabel: entry.isAutoGenerated && entry.entryType === 'lavoro' ? 'Lavoro pianificato' : this.getAttendanceTypeLabel(entry.entryType),
+        workedHours: entry.workedHours,
+        notes: entry.notes || '-',
+        sourceLabel: entry.isAutoGenerated ? 'Sistema' : 'Manuale',
+      })),
+  );
+
+  protected readonly reportDetailDistribution = computed<ReportDistributionSlice[]>(() => {
+    const attendanceSummary = this.reportDetailAttendanceSummary();
+
+    return [
+      { label: 'Presenze', value: attendanceSummary.workDays, color: '#2563eb' },
+      { label: 'Ferie', value: attendanceSummary.vacationDays, color: '#059669' },
+      { label: 'Malattie', value: attendanceSummary.sickDays, color: '#dc2626' },
+    ];
+  });
+
+  protected readonly reportDetailPeriodLabel = computed(() => {
+    if (!this.reportDetailFilter.startDate || !this.reportDetailFilter.endDate) {
+      return 'Periodo non selezionato';
+    }
+
+    return `${this.formatDate(this.reportDetailFilter.startDate)} - ${this.formatDate(this.reportDetailFilter.endDate)}`;
+  });
+
+  protected readonly reportDetailHasData = computed(() =>
+    this.reportDetailSales().length > 0 || this.reportDetailAttendanceRows().length > 0,
+  );
+
+  protected onReportMonthYearChange(): void {
+    const { startDate, endDate } = this.getMonthDateRange(this.reportFilter.year, this.reportFilter.month);
+    this.reportFilter.startDate = startDate;
+    this.reportFilter.endDate = endDate;
+  }
+
+  protected onReportDateRangeChange(): void {
+    if (!this.reportFilter.startDate || !this.reportFilter.endDate) {
+      return;
+    }
+
+    if (this.reportFilter.endDate < this.reportFilter.startDate) {
+      this.reportFilter.endDate = this.reportFilter.startDate;
+    }
+
+    this.reportFilter.month = this.reportFilter.startDate.slice(5, 7);
+    this.reportFilter.year = this.reportFilter.startDate.slice(0, 4);
+  }
+
+  protected openReportStaffDetail(staffMemberId: string): void {
+    this.selectedReportStaffMemberId.set(staffMemberId);
+  }
+
+  protected closeReportStaffDetail(): void {
+    this.selectedReportStaffMemberId.set(null);
+  }
+
+  protected onReportDetailDateRangeChange(): void {
+    if (!this.reportDetailFilter.startDate || !this.reportDetailFilter.endDate) {
+      return;
+    }
+
+    if (this.reportDetailFilter.endDate < this.reportDetailFilter.startDate) {
+      this.reportDetailFilter.endDate = this.reportDetailFilter.startDate;
+    }
+  }
+
+  protected formatReportDateButton(date: string): string {
+    if (!date) {
+      return '--';
+    }
+
+    return new Intl.DateTimeFormat(this.locale, {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    }).format(new Date(date));
+  }
+
+  protected formatTrendValue(trendPercentage: number | null): string {
+    if (trendPercentage === null) {
+      return 'Nuovo';
+    }
+
+    const roundedTrend = Math.round(trendPercentage * 10) / 10;
+    const prefix = roundedTrend > 0 ? '+' : '';
+    return `${prefix}${roundedTrend}%`;
+  }
+
+  protected getTrendClass(trendPercentage: number | null): string {
+    if (trendPercentage === null || trendPercentage === 0) {
+      return 'report-trend-neutral';
+    }
+
+    return trendPercentage > 0 ? 'report-trend-up' : 'report-trend-down';
+  }
+
+  protected formatProductivityIndex(value: number): string {
+    return `${Math.round(value)}%`;
+  }
+
   protected readonly filteredAttendanceEntries = computed(() =>
     (this.attendanceFilterVersion(),
     this.filterAttendanceByMonth(this.attendanceEntries(), this.attendanceFilter.month, this.attendanceFilter.year)),
   );
 
-  protected readonly explicitAttendanceEntriesForSelectedStaff = computed(() =>
-    this.filteredAttendanceEntries().filter((entry) => entry.staffMemberId === this.attendanceFilter.staffMemberId),
-  );
+  protected readonly explicitAttendanceEntriesForSelectedStaff = computed(() => {
+    this.attendanceFilterVersion();
+    const selectedStaffMemberId = this.selectedAttendanceStaffMemberId();
+    return this.filteredAttendanceEntries().filter((entry) => entry.staffMemberId === selectedStaffMemberId);
+  });
 
-  protected readonly attendanceEntriesForSelectedStaff = computed<EffectiveAttendanceEntry[]>(() =>
-    this.buildMonthlyAttendanceEntries(this.attendanceFilter.staffMemberId),
-  );
+  protected readonly attendanceEntriesForSelectedStaff = computed<EffectiveAttendanceEntry[]>(() => {
+    this.attendanceFilterVersion();
+    return this.buildMonthlyAttendanceEntries(this.selectedAttendanceStaffMemberId());
+  });
 
   protected readonly attendanceSummary = computed<AttendanceSummary>(() =>
     this.buildAttendanceSummary(this.attendanceEntriesForSelectedStaff()),
@@ -324,8 +647,20 @@ export class App implements OnInit, OnDestroy {
       .map((staffMember) => ({
         staffMember,
         summary: this.buildAttendanceSummary(this.buildMonthlyAttendanceEntries(staffMember.id)),
+        annualSummary: this.buildAttendanceSummary(this.buildYearlyAttendanceEntries(staffMember.id)),
       }))
-      .filter((row) => row.staffMember.isActive || row.summary.totalWorkedHours > 0 || row.summary.vacationDays > 0 || row.summary.permitDays > 0 || row.summary.sickDays > 0)
+      .filter(
+        (row) =>
+          row.staffMember.isActive ||
+          row.summary.totalWorkedHours > 0 ||
+          row.summary.vacationDays > 0 ||
+          row.summary.permitDays > 0 ||
+          row.summary.sickDays > 0 ||
+          row.annualSummary.totalWorkedHours > 0 ||
+          row.annualSummary.vacationDays > 0 ||
+          row.annualSummary.permitDays > 0 ||
+          row.annualSummary.sickDays > 0,
+      )
       .sort((left, right) => left.staffMember.fullName.localeCompare(right.staffMember.fullName)),
   );
 
@@ -336,7 +671,7 @@ export class App implements OnInit, OnDestroy {
     const firstDay = new Date(year, monthIndex, 1);
     const lastDay = new Date(year, monthIndex + 1, 0);
     const days: AttendanceCalendarDay[] = [];
-    const selectedStaffMember = this.getAttendanceStaffMemberById(this.attendanceFilter.staffMemberId);
+    const selectedStaffMember = this.getAttendanceStaffMemberById(this.selectedAttendanceStaffMemberId());
 
     for (let day = 1; day <= lastDay.getDate(); day += 1) {
       const currentDate = new Date(year, monthIndex, day);
@@ -368,6 +703,17 @@ export class App implements OnInit, OnDestroy {
     void this.initializeApp();
   }
 
+  ngAfterViewChecked(): void {
+    const nextRenderKey = this.getReportDetailChartsRenderKey();
+
+    if (nextRenderKey === this.reportDetailChartsRenderKey) {
+      return;
+    }
+
+    this.reportDetailChartsRenderKey = nextRenderKey;
+    void this.renderReportDetailCharts();
+  }
+
   ngOnDestroy(): void {
     window.clearInterval(this.currentDateTimerId);
 
@@ -375,13 +721,29 @@ export class App implements OnInit, OnDestroy {
       window.clearTimeout(this.feedbackTimeoutId);
     }
 
+    if (this.remoteReloadTimeoutId) {
+      window.clearTimeout(this.remoteReloadTimeoutId);
+    }
+
     this.authSubscription?.unsubscribe();
+    this.stopDataSync();
+    this.destroyReportDetailCharts();
   }
 
   protected setAuthMode(mode: AuthMode): void {
     this.authMode.set(mode);
     this.authForm.password = '';
     this.authForm.confirmPassword = '';
+    this.showAuthPassword.set(false);
+    this.showAuthConfirmPassword.set(false);
+  }
+
+  protected toggleAuthPasswordVisibility(): void {
+    this.showAuthPassword.update((value) => !value);
+  }
+
+  protected toggleAuthConfirmPasswordVisibility(): void {
+    this.showAuthConfirmPassword.update((value) => !value);
   }
 
   protected async submitAuth(): Promise<void> {
@@ -414,10 +776,14 @@ export class App implements OnInit, OnDestroy {
           this.authForm.password = '';
           this.authForm.confirmPassword = '';
           this.authMode.set('sign-in');
-          this.setFeedback('info', 'Account creato. Conferma l\'email e poi accedi.');
+          this.showAuthPassword.set(false);
+          this.showAuthConfirmPassword.set(false);
+          this.setFeedback('info', 'Account creato. Se non entri subito, controlla le impostazioni email di Supabase.');
           return;
         }
 
+        this.showAuthPassword.set(false);
+        this.showAuthConfirmPassword.set(false);
         this.setFeedback('success', 'Account creato e accesso effettuato.');
         return;
       }
@@ -425,6 +791,8 @@ export class App implements OnInit, OnDestroy {
       await this.storeService.signIn(email, password);
       this.authForm.password = '';
       this.authForm.confirmPassword = '';
+      this.showAuthPassword.set(false);
+      this.showAuthConfirmPassword.set(false);
       this.setFeedback('success', 'Accesso effettuato.');
     } catch (error) {
       this.setFeedback('error', this.getErrorMessage(error, 'Impossibile completare l\'accesso.'));
@@ -727,8 +1095,10 @@ export class App implements OnInit, OnDestroy {
   }
 
   protected selectAttendanceDay(isoDate: string): void {
-    if (this.attendanceFilter.staffMemberId) {
-      this.attendanceForm.staffMemberId = this.attendanceFilter.staffMemberId;
+    const selectedStaffMemberId = this.selectedAttendanceStaffMemberId();
+
+    if (selectedStaffMemberId) {
+      this.attendanceForm.staffMemberId = selectedStaffMemberId;
     }
 
     this.attendanceForm.entryDate = isoDate;
@@ -751,15 +1121,19 @@ export class App implements OnInit, OnDestroy {
     this.isAttendanceModalOpen.set(true);
   }
 
-  protected onAttendanceFilterStaffChange(): void {
-    this.attendanceFilterVersion.update((value) => value + 1);
+  protected onAttendanceFilterStaffChange(staffMemberId: string): void {
+    this.attendanceFilter.staffMemberId = staffMemberId;
+    this.selectedAttendanceStaffMemberId.set(staffMemberId);
+    this.closeAttendanceModal();
 
-    if (!this.attendanceFilter.staffMemberId) {
+    if (!staffMemberId) {
+      this.attendanceFilterVersion.update((value) => value + 1);
       return;
     }
 
-    this.attendanceForm.staffMemberId = this.attendanceFilter.staffMemberId;
+    this.attendanceForm.staffMemberId = staffMemberId;
     this.resetAttendanceForm();
+    this.attendanceFilterVersion.update((value) => value + 1);
   }
 
   protected onAttendanceFilterPeriodChange(): void {
@@ -769,6 +1143,10 @@ export class App implements OnInit, OnDestroy {
 
   protected closeAttendanceModal(): void {
     this.isAttendanceModalOpen.set(false);
+  }
+
+  protected isSelectedAttendanceStaffMember(staffMemberId: string): boolean {
+    return this.selectedAttendanceStaffMemberId() === staffMemberId;
   }
 
   protected onAttendanceTypeChange(): void {
@@ -844,25 +1222,25 @@ export class App implements OnInit, OnDestroy {
       return;
     }
 
-    if (
-      this.attendanceForm.entryType === 'lavoro' &&
-      plannedShift &&
-      this.normalizeAmount(this.attendanceForm.workedHours) !== this.normalizeAmount(plannedShift.hours)
-    ) {
-      this.setFeedback('error', 'Le ore inserite devono coincidere con le ore effettive previste dal turno.');
-      return;
-    }
-
     this.isSavingAttendance.set(true);
 
     try {
       const normalizedHours = this.normalizeAmount(this.attendanceForm.workedHours);
       const isRangeEntry =
         this.attendanceForm.entryType === 'ferie' || this.attendanceForm.entryType === 'malattia';
-      const targetDates = isRangeEntry
-        ? this.getDateRange(this.attendanceForm.entryDate, this.attendanceForm.endDate)
-        : [this.attendanceForm.entryDate];
-      const conflictingEntry = this.findConflictingExplicitEntry(targetDates, this.editingAttendanceEntryId());
+      const targetDates = this.getAttendanceTargetDates(
+        this.attendanceForm.entryType,
+        this.attendanceForm.entryDate,
+        this.attendanceForm.endDate,
+      );
+
+      if (isRangeEntry && targetDates.length === 0) {
+        this.setFeedback('error', 'Nel periodo selezionato non ci sono giorni validi da registrare.');
+        return;
+      }
+
+      const editingEntryIds = this.editingAttendanceEntryIds();
+      const conflictingEntry = this.findConflictingExplicitEntry(targetDates, editingEntryIds);
 
       if (conflictingEntry) {
         this.setFeedback('error', `Esiste gia una presenza registrata il ${this.formatDate(conflictingEntry.entryDate)}.`);
@@ -877,57 +1255,67 @@ export class App implements OnInit, OnDestroy {
         }
 
         const currentEntry = this.attendanceEntries().find((entry) => entry.id === attendanceEntryId);
+        const editingEntries = this.attendanceEntries().filter((entry) => editingEntryIds.includes(entry.id));
 
-        if (!currentEntry || !this.canEditAttendanceEntry(currentEntry)) {
+        if (
+          !currentEntry ||
+          editingEntries.length === 0 ||
+          editingEntries.some((entry) => !this.canEditAttendanceEntry(entry))
+        ) {
           this.setFeedback('error', 'La presenza non e piu modificabile.');
           return;
         }
 
-        await this.storeService.updateAttendanceEntry({
-          attendanceEntryId,
-          staffMemberId: this.attendanceForm.staffMemberId,
-          entryDate: this.attendanceForm.entryDate,
-          entryType: this.attendanceForm.entryType,
-          workedHours: normalizedHours,
-          notes: this.attendanceForm.notes,
-        });
+        const shouldRecreateEntries =
+          editingEntries.length > 1 ||
+          currentEntry.entryType === 'ferie' ||
+          currentEntry.entryType === 'malattia' ||
+          this.attendanceForm.entryType === 'ferie' ||
+          this.attendanceForm.entryType === 'malattia';
 
-        this.attendanceEntries.update((entries) =>
-          entries.map((entry) =>
-            entry.id === attendanceEntryId
-              ? {
-                  ...entry,
-                  staffMemberId: this.attendanceForm.staffMemberId,
-                  entryDate: this.attendanceForm.entryDate,
-                  entryType: this.attendanceForm.entryType,
-                  workedHours: normalizedHours,
-                  notes: this.attendanceForm.notes.trim(),
-                }
-              : entry,
-          ),
-        );
-        this.setFeedback('success', 'Presenza aggiornata correttamente.');
-      } else {
-        const createdEntries: AttendanceEntry[] = [];
-
-        for (const targetDate of targetDates) {
-          const createdEntry = await this.storeService.createAttendanceEntry({
+        if (!shouldRecreateEntries) {
+          await this.storeService.updateAttendanceEntry({
+            attendanceEntryId,
             staffMemberId: this.attendanceForm.staffMemberId,
-            entryDate: targetDate,
+            entryDate: this.attendanceForm.entryDate,
             entryType: this.attendanceForm.entryType,
-            workedHours:
-              this.attendanceForm.entryType === 'permesso'
-                ? normalizedHours
-                : this.attendanceForm.entryType === 'lavoro'
-                  ? normalizedHours
-                  : 0,
+            workedHours: normalizedHours,
             notes: this.attendanceForm.notes,
           });
-          createdEntries.push(createdEntry);
+
+          this.attendanceEntries.update((entries) =>
+            entries.map((entry) =>
+              entry.id === attendanceEntryId
+                ? {
+                    ...entry,
+                    staffMemberId: this.attendanceForm.staffMemberId,
+                    entryDate: this.attendanceForm.entryDate,
+                    entryType: this.attendanceForm.entryType,
+                    workedHours: normalizedHours,
+                    notes: this.attendanceForm.notes.trim(),
+                  }
+                : entry,
+            ),
+          );
+        } else {
+          for (const entry of editingEntries) {
+            await this.storeService.deleteAttendanceEntry(entry.id);
+          }
+
+          const recreatedEntries = await this.createAttendanceEntriesForDates(targetDates, normalizedHours);
+          this.attendanceEntries.update((entries) => [
+            ...entries.filter((entry) => !editingEntryIds.includes(entry.id)),
+            ...recreatedEntries,
+          ]);
         }
+
+        this.setFeedback('success', 'Presenza aggiornata correttamente.');
+      } else {
+        const createdEntries = await this.createAttendanceEntriesForDates(targetDates, normalizedHours);
 
         this.attendanceEntries.update((entries) => [...entries, ...createdEntries]);
         this.attendanceFilter.staffMemberId = this.attendanceForm.staffMemberId;
+        this.selectedAttendanceStaffMemberId.set(this.attendanceForm.staffMemberId);
         this.attendanceFilter.month = this.attendanceForm.entryDate.slice(5, 7);
         this.attendanceFilter.year = this.attendanceForm.entryDate.slice(0, 4);
         this.setFeedback(
@@ -946,10 +1334,16 @@ export class App implements OnInit, OnDestroy {
   }
 
   protected startEditAttendanceEntry(entry: AttendanceEntry): void {
+    const editingEntries = this.getAttendanceEditEntries(entry);
+    const orderedEditingEntries = [...editingEntries].sort((left, right) => left.entryDate.localeCompare(right.entryDate));
+    const firstEntry = orderedEditingEntries[0] ?? entry;
+    const lastEntry = orderedEditingEntries.at(-1) ?? entry;
+
     this.editingAttendanceEntryId.set(entry.id);
+    this.editingAttendanceEntryIds.set(orderedEditingEntries.map((editingEntry) => editingEntry.id));
     this.attendanceForm.staffMemberId = entry.staffMemberId;
-    this.attendanceForm.entryDate = entry.entryDate;
-    this.attendanceForm.endDate = entry.entryDate;
+    this.attendanceForm.entryDate = firstEntry.entryDate;
+    this.attendanceForm.endDate = lastEntry.entryDate;
     this.attendanceForm.entryType = entry.entryType;
     this.attendanceForm.workedHours = entry.workedHours;
     this.attendanceForm.notes = entry.notes;
@@ -1022,7 +1416,7 @@ export class App implements OnInit, OnDestroy {
       18,
     );
     document.setFontSize(11);
-    document.text(`Mese: ${this.reportPeriodLabel()}`, 14, 26);
+    document.text(`Periodo: ${this.reportPeriodLabel()}`, 14, 26);
 
     autoTable(document, {
       startY: 34,
@@ -1058,7 +1452,8 @@ export class App implements OnInit, OnDestroy {
     document.text(`Totale regolare: ${this.formatCurrency(totals.regular)}`, 14, finalY + 12);
     document.text(`Totale test: ${this.formatCurrency(totals.test)}`, 14, finalY + 19);
     document.text(`Totale complessivo: ${this.formatCurrency(totals.regular + totals.test)}`, 14, finalY + 26);
-    document.save(
+    await this.savePdfDocument(
+      document,
       staffMember
         ? `report-incassi-${staffMember.fullName.toLowerCase().replaceAll(' ', '-')}-${this.reportFilter.year}-${this.reportFilter.month}.pdf`
         : `report-incassi-${this.reportFilter.year}-${this.reportFilter.month}.pdf`,
@@ -1177,11 +1572,199 @@ export class App implements OnInit, OnDestroy {
       },
     });
 
-    document.save(
-      `presenze-mensili-${this.attendanceFilter.year}-${this.attendanceFilter.month}.pdf`,
-    );
+    await this.savePdfDocument(document, `presenze-mensili-${this.attendanceFilter.year}-${this.attendanceFilter.month}.pdf`);
 
     this.setFeedback('success', 'PDF mensile presenze generato correttamente.');
+  }
+
+  protected async exportDetailedReportPdf(): Promise<void> {
+    const selectedStaffMember = this.selectedReportStaffMember();
+
+    if (!selectedStaffMember) {
+      this.setFeedback('error', 'Seleziona prima una persona dal riepilogo andamento.');
+      return;
+    }
+
+    if (!this.reportDetailHasData()) {
+      this.setFeedback('error', 'Non ci sono dati nel periodo selezionato per generare il report dettagliato.');
+      return;
+    }
+
+    await this.renderReportDetailCharts();
+
+    const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]);
+    const document = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4',
+    });
+    const metrics = this.reportDetailMetrics();
+    const monthlyRows = this.reportDetailMonthlyRows();
+    const dailyRows = this.reportDetailDailyRows();
+    const attendanceRows = this.reportDetailAttendanceRows();
+    const timestamp = new Intl.DateTimeFormat(this.locale, {
+      dateStyle: 'short',
+      timeStyle: 'medium',
+    }).format(new Date());
+    const signature = await this.generateReportSignature(
+      JSON.stringify({
+        staffMemberId: selectedStaffMember.id,
+        startDate: this.reportDetailFilter.startDate,
+        endDate: this.reportDetailFilter.endDate,
+        totalAmount: metrics.totalAmount,
+        workedDays: metrics.workedDays,
+        absenceDays: metrics.absenceDays,
+      }),
+    );
+
+    document.setFontSize(18);
+    document.text(`Report avanzato ${selectedStaffMember.fullName}`, 14, 18);
+    document.setFontSize(11);
+    document.text(`Azienda: ${this.title}`, 14, 26);
+    document.text(`Periodo: ${this.reportDetailPeriodLabel()}`, 14, 32);
+    document.text(`Profilo: ${this.getRoleLabel(selectedStaffMember.role)}`, 14, 38);
+    document.text(`Generato il: ${timestamp}`, 14, 44);
+
+    autoTable(document, {
+      startY: 50,
+      head: [['Indicatore', 'Valore']],
+      body: [
+        ['Totale incassi', this.formatCurrency(metrics.totalAmount)],
+        ['Incasso regolare', this.formatCurrency(metrics.totalRegular)],
+        ['Incasso test', this.formatCurrency(metrics.totalTest)],
+        ['Media giornaliera', this.formatCurrency(metrics.averageDaily)],
+        ['Giorni lavorati', String(metrics.workedDays)],
+        ['Giorni lavorabili pianificati', String(metrics.plannedWorkingDays)],
+        ['Assenze', String(metrics.absenceDays)],
+        ['Indice di produttivita', this.formatProductivityIndex(metrics.productivityIndex)],
+        ['Ferie maturate stimate', this.formatCompactHours(metrics.vacationAccrued)],
+        ['Ferie utilizzate', String(metrics.vacationUsed)],
+        ['Permessi', String(metrics.permitDays)],
+        ['Malattia', String(metrics.sickDays)],
+      ],
+      styles: {
+        fontSize: 9.2,
+        cellPadding: 2.4,
+      },
+      headStyles: {
+        fillColor: [37, 99, 235],
+      },
+      alternateRowStyles: {
+        fillColor: [248, 250, 252],
+      },
+    });
+
+    document.addPage();
+    document.setFontSize(16);
+    document.text('Storico incassi e grafici', 14, 18);
+    const monthlyChartImage = this.getReportChartImageData('report-monthly-chart');
+    const dailyChartImage = this.getReportChartImageData('report-daily-chart');
+    const distributionChartImage = this.getReportChartImageData('report-distribution-chart');
+
+    if (monthlyChartImage) {
+      document.setFontSize(11);
+      document.text('Incassi mensili', 14, 28);
+      document.addImage(monthlyChartImage, 'PNG', 14, 32, 182, 58);
+    }
+
+    if (dailyChartImage) {
+      document.setFontSize(11);
+      document.text('Andamento giornaliero', 14, 100);
+      document.addImage(dailyChartImage, 'PNG', 14, 104, 182, 58);
+    }
+
+    if (distributionChartImage) {
+      document.setFontSize(11);
+      document.text('Distribuzione presenze, ferie e malattie', 14, 172);
+      document.addImage(distributionChartImage, 'PNG', 14, 176, 84, 84);
+    }
+
+    document.addPage();
+    document.setFontSize(16);
+    document.text('Tabelle di dettaglio', 14, 18);
+
+    autoTable(document, {
+      startY: 24,
+      head: [['Mese', 'Totale', 'Regolare', 'Test', 'Giorni', 'Media']],
+      body: monthlyRows.map((row) => [
+        row.label,
+        this.formatCurrency(row.totalAmount),
+        this.formatCurrency(row.regularAmount),
+        this.formatCurrency(row.testAmount),
+        String(row.workedDays),
+        this.formatCurrency(row.averageDaily),
+      ]),
+      styles: {
+        fontSize: 8.5,
+        cellPadding: 2,
+      },
+      headStyles: {
+        fillColor: [17, 24, 39],
+      },
+    });
+
+    autoTable(document, {
+      startY: ((document as typeof document & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 24) + 10,
+      head: [['Data', 'Totale', 'Regolare', 'Test']],
+      body: dailyRows.map((row) => [
+        row.label,
+        this.formatCurrency(row.totalAmount),
+        this.formatCurrency(row.regularAmount),
+        this.formatCurrency(row.testAmount),
+      ]),
+      styles: {
+        fontSize: 8.3,
+        cellPadding: 2,
+      },
+      headStyles: {
+        fillColor: [37, 99, 235],
+      },
+    });
+
+    document.addPage();
+    document.setFontSize(16);
+    document.text('Presenze giornaliere', 14, 18);
+
+    autoTable(document, {
+      startY: 24,
+      head: [['Data', 'Voce', 'Ore', 'Origine', 'Note']],
+      body: attendanceRows.map((row) => [
+        row.label,
+        row.typeLabel,
+        this.formatCompactHours(row.workedHours),
+        row.sourceLabel,
+        row.notes,
+      ]),
+      styles: {
+        fontSize: 8.2,
+        cellPadding: 2,
+      },
+      headStyles: {
+        fillColor: [5, 150, 105],
+      },
+    });
+
+    const finalY =
+      ((document as typeof document & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 24) + 12;
+    document.setFontSize(10);
+    document.text(`Firma digitale: ${signature}`, 14, Math.min(finalY, 272));
+
+    this.decorateReportPdfPages(
+      document,
+      `${selectedStaffMember.fullName} · ${this.reportDetailPeriodLabel()}`,
+      timestamp,
+      signature,
+    );
+
+    await this.savePdfDocument(
+      document,
+      `report-dettagliato-${selectedStaffMember.fullName.toLowerCase().replaceAll(' ', '-')}-${this.reportDetailFilter.startDate}-${this.reportDetailFilter.endDate}.pdf`,
+    );
+
+    this.setFeedback('success', `PDF dettagliato generato per ${selectedStaffMember.fullName}.`);
   }
 
   protected getStaffLabel(staffMemberId: string): string {
@@ -1248,12 +1831,14 @@ export class App implements OnInit, OnDestroy {
     if (!session) {
       this.loadedUserId = null;
       this.loadingUserId = null;
+      this.stopDataSync();
       this.clearDataState();
       this.isLoading.set(false);
       return;
     }
 
     if (this.loadedUserId === session.user.id || this.loadingUserId === session.user.id) {
+      await this.ensureDataSync(session.user.id);
       return;
     }
 
@@ -1262,11 +1847,24 @@ export class App implements OnInit, OnDestroy {
     try {
       await this.loadData();
       this.loadedUserId = session.user.id;
+      await this.ensureDataSync(session.user.id);
     } finally {
       if (this.loadingUserId === session.user.id) {
         this.loadingUserId = null;
       }
     }
+  }
+
+  private async ensureDataSync(userId: string): Promise<void> {
+    if (this.dataSyncUserId === userId && this.dataSyncSubscription) {
+      return;
+    }
+
+    this.stopDataSync();
+    this.dataSyncSubscription = await this.storeService.subscribeToDataChanges(() => {
+      this.scheduleRemoteReload(userId);
+    });
+    this.dataSyncUserId = userId;
   }
 
   private async loadData(): Promise<void> {
@@ -1284,6 +1882,9 @@ export class App implements OnInit, OnDestroy {
       this.staffMembers.set(staffMembers);
       this.dailySales.set(dailySales);
       this.attendanceEntries.set(attendanceEntries);
+      if (this.selectedReportStaffMemberId() && !staffMembers.some((staffMember) => staffMember.id === this.selectedReportStaffMemberId())) {
+        this.selectedReportStaffMemberId.set(null);
+      }
       this.ensureSelectedStaffMember();
       this.ensureSelectedAttendanceStaffMember();
     } finally {
@@ -1308,12 +1909,59 @@ export class App implements OnInit, OnDestroy {
     this.saleForm.notes = '';
     this.resetAttendanceForm();
     this.attendanceFilter.staffMemberId = '';
+    this.selectedAttendanceStaffMemberId.set('');
+    this.selectedReportStaffMemberId.set(null);
     this.attendanceFilter.month = this.today().slice(5, 7);
     this.attendanceFilter.year = String(new Date().getFullYear());
   }
 
-  private filterSalesByMonth(sales: DailySale[], month: string, year: string): DailySale[] {
-    return sales.filter((sale) => sale.saleDate.startsWith(`${year}-${month}`));
+  private stopDataSync(): void {
+    if (this.remoteReloadTimeoutId) {
+      window.clearTimeout(this.remoteReloadTimeoutId);
+      this.remoteReloadTimeoutId = null;
+    }
+
+    this.dataSyncSubscription?.unsubscribe();
+    this.dataSyncSubscription = null;
+    this.dataSyncUserId = null;
+  }
+
+  private scheduleRemoteReload(userId: string): void {
+    if (this.authSession()?.user.id !== userId) {
+      return;
+    }
+
+    if (this.remoteReloadTimeoutId) {
+      window.clearTimeout(this.remoteReloadTimeoutId);
+    }
+
+    this.remoteReloadTimeoutId = window.setTimeout(() => {
+      this.remoteReloadTimeoutId = null;
+      void this.reloadRemoteData(userId);
+    }, 250);
+  }
+
+  private async reloadRemoteData(userId: string): Promise<void> {
+    if (this.loadingUserId || this.authSession()?.user.id !== userId) {
+      return;
+    }
+
+    try {
+      await this.loadData();
+      this.loadedUserId = userId;
+    } catch (error) {
+      console.error('Errore durante la sincronizzazione dei dati.', error);
+    }
+  }
+
+  private filterSalesByDateRange(sales: DailySale[], startDate: string, endDate: string): DailySale[] {
+    if (!startDate || !endDate) {
+      return sales;
+    }
+
+    const normalizedEndDate = endDate < startDate ? startDate : endDate;
+
+    return sales.filter((sale) => sale.saleDate >= startDate && sale.saleDate <= normalizedEndDate);
   }
 
   private filterAttendanceByMonth(entries: AttendanceEntry[], month: string, year: string): AttendanceEntry[] {
@@ -1322,8 +1970,71 @@ export class App implements OnInit, OnDestroy {
       .sort((left, right) => right.entryDate.localeCompare(left.entryDate));
   }
 
+  private getMonthDateRange(year: string, month: string): { startDate: string; endDate: string } {
+    const yearNumber = Number.parseInt(year, 10);
+    const monthIndex = Number.parseInt(month, 10) - 1;
+
+    return {
+      startDate: `${year}-${month}-01`,
+      endDate: this.toInputDate(new Date(yearNumber, monthIndex + 1, 0)),
+    };
+  }
+
+  private isWholeSelectedMonthRange(): boolean {
+    const { startDate, endDate } = this.getMonthDateRange(this.reportFilter.year, this.reportFilter.month);
+    return this.reportFilter.startDate === startDate && this.reportFilter.endDate === endDate;
+  }
+
   private getSalesForStaffInCurrentReport(staffMemberId: string): DailySale[] {
     return this.filteredReportSales().filter((sale) => sale.staffMemberId === staffMemberId);
+  }
+
+  private getSalesForStaffInRange(staffMemberId: string, startDate: string, endDate: string): DailySale[] {
+    return this.dailySales()
+      .filter((sale) => sale.staffMemberId === staffMemberId)
+      .filter((sale) => sale.saleDate >= startDate && sale.saleDate <= endDate);
+  }
+
+  private sumSalesAmount(sales: DailySale[]): number {
+    return sales.reduce((total, sale) => total + sale.regularAmount + sale.testAmount, 0);
+  }
+
+  private calculateTrendPercentage(currentValue: number, previousValue: number): number | null {
+    if (previousValue === 0) {
+      return currentValue > 0 ? null : 0;
+    }
+
+    return ((currentValue - previousValue) / previousValue) * 100;
+  }
+
+  private getMonthDateRangeFromIsoDate(isoDate: string): { startDate: string; endDate: string } {
+    return this.getMonthDateRange(isoDate.slice(0, 4), isoDate.slice(5, 7));
+  }
+
+  private getPlannedWorkingDaysInRange(staffMember: StaffMember, startDate: string, endDate: string): number {
+    const employeeStartDate = staffMember.createdAt.slice(0, 10);
+    const effectiveEndDate = endDate > this.today() ? this.today() : endDate;
+
+    return this.getDateRange(startDate, effectiveEndDate).filter((isoDate) => {
+      if (isoDate < employeeStartDate) {
+        return false;
+      }
+
+      return this.getPlannedShiftForDate(staffMember, isoDate).isWorking;
+    }).length;
+  }
+
+  private calculateVacationAccrual(staffMember: StaffMember, startDate: string, endDate: string): number {
+    const employeeStartDate = staffMember.createdAt.slice(0, 10);
+    const effectiveStartDate = employeeStartDate > startDate ? employeeStartDate : startDate;
+    const effectiveEndDate = endDate > this.today() ? this.today() : endDate;
+
+    if (effectiveEndDate < effectiveStartDate) {
+      return 0;
+    }
+
+    const activeMonths = new Set(this.getDateRange(effectiveStartDate, effectiveEndDate).map((date) => date.slice(0, 7)));
+    return this.normalizeAmount(activeMonths.size * 2.17);
   }
 
   private ownerCount(excludedStaffMemberId?: string | null): number {
@@ -1361,6 +2072,264 @@ export class App implements OnInit, OnDestroy {
     return new Intl.DateTimeFormat(this.locale).format(new Date(date));
   }
 
+  private async savePdfDocument(
+    document: { save: (filename: string) => void; output: (type: 'blob') => Blob },
+    fileName: string,
+  ): Promise<void> {
+    if (!this.isIphoneOrIpad()) {
+      document.save(fileName);
+      return;
+    }
+
+    const pdfBlob = document.output('blob');
+    const pdfFile = new File([pdfBlob], fileName, { type: 'application/pdf' });
+
+    if (navigator.share && navigator.canShare?.({ files: [pdfFile] })) {
+      try {
+        await navigator.share({
+          files: [pdfFile],
+          title: fileName,
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+      }
+      return;
+    }
+
+    const blobUrl = URL.createObjectURL(pdfBlob);
+    const popupWindow = window.open(blobUrl, '_blank', 'noopener,noreferrer');
+
+    if (!popupWindow) {
+      const downloadLink = window.document.createElement('a');
+      downloadLink.href = blobUrl;
+      downloadLink.target = '_blank';
+      downloadLink.rel = 'noopener noreferrer';
+      downloadLink.click();
+    }
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(blobUrl);
+    }, 60_000);
+  }
+
+  private getReportDetailChartsRenderKey(): string {
+    if (this.currentSection() !== 'report' || !this.selectedReportStaffMember()) {
+      return '';
+    }
+
+    return JSON.stringify({
+      staffMemberId: this.selectedReportStaffMemberId(),
+      startDate: this.reportDetailFilter.startDate,
+      endDate: this.reportDetailFilter.endDate,
+      monthlyRows: this.reportDetailMonthlyRows().map((row) => [row.monthKey, row.totalAmount]),
+      dailyRows: this.reportDetailDailyRows().map((row) => [row.isoDate, row.totalAmount]),
+      distribution: this.reportDetailDistribution().map((slice) => slice.value),
+    });
+  }
+
+  private async loadReportChartLibrary(): Promise<typeof import('chart.js/auto')> {
+    if (!this.reportChartLibraryPromise) {
+      this.reportChartLibraryPromise = import('chart.js/auto');
+    }
+
+    return this.reportChartLibraryPromise;
+  }
+
+  private async renderReportDetailCharts(): Promise<void> {
+    const renderKey = this.getReportDetailChartsRenderKey();
+
+    if (!renderKey) {
+      this.destroyReportDetailCharts();
+      return;
+    }
+
+    const monthlyCanvas = document.getElementById('report-monthly-chart') as HTMLCanvasElement | null;
+    const dailyCanvas = document.getElementById('report-daily-chart') as HTMLCanvasElement | null;
+    const distributionCanvas = document.getElementById('report-distribution-chart') as HTMLCanvasElement | null;
+
+    if (!monthlyCanvas || !dailyCanvas || !distributionCanvas) {
+      return;
+    }
+
+    const { default: Chart } = await this.loadReportChartLibrary();
+    this.destroyReportDetailCharts();
+
+    const monthlyRows = this.reportDetailMonthlyRows();
+    const dailyRows = this.reportDetailDailyRows();
+    const distributionRows = this.reportDetailDistribution();
+    const distributionHasValues = distributionRows.some((slice) => slice.value > 0);
+
+    this.reportChartInstances.set(
+      'monthly',
+      new Chart(monthlyCanvas, {
+        type: 'bar',
+        data: {
+          labels: monthlyRows.length ? monthlyRows.map((row) => row.label) : ['Nessun dato'],
+          datasets: [
+            {
+              label: 'Incassi mensili',
+              data: monthlyRows.length ? monthlyRows.map((row) => row.totalAmount) : [0],
+              backgroundColor: 'rgba(37, 99, 235, 0.82)',
+              borderRadius: 10,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: false,
+            },
+            tooltip: {
+              callbacks: {
+                label: (context) => this.formatCurrency(Number(context.raw ?? 0)),
+              },
+            },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: {
+                callback: (value) => this.formatCurrency(Number(value)),
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    this.reportChartInstances.set(
+      'daily',
+      new Chart(dailyCanvas, {
+        type: 'line',
+        data: {
+          labels: dailyRows.length ? dailyRows.map((row) => row.label) : ['Nessun dato'],
+          datasets: [
+            {
+              label: 'Incasso giornaliero',
+              data: dailyRows.length ? dailyRows.map((row) => row.totalAmount) : [0],
+              borderColor: '#8b5cf6',
+              backgroundColor: 'rgba(139, 92, 246, 0.18)',
+              fill: true,
+              tension: 0.28,
+              pointRadius: 3,
+              pointHoverRadius: 5,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false,
+          },
+          plugins: {
+            legend: {
+              display: false,
+            },
+            tooltip: {
+              callbacks: {
+                label: (context) => this.formatCurrency(Number(context.raw ?? 0)),
+              },
+            },
+          },
+          scales: {
+            y: {
+              beginAtZero: true,
+              ticks: {
+                callback: (value) => this.formatCurrency(Number(value)),
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    this.reportChartInstances.set(
+      'distribution',
+      new Chart(distributionCanvas, {
+        type: 'pie',
+        data: {
+          labels: distributionHasValues ? distributionRows.map((slice) => slice.label) : ['Nessun dato'],
+          datasets: [
+            {
+              label: 'Distribuzione presenze',
+              data: distributionHasValues ? distributionRows.map((slice) => slice.value) : [1],
+              backgroundColor: distributionHasValues ? distributionRows.map((slice) => slice.color) : ['#cbd5e1'],
+              borderColor: '#ffffff',
+              borderWidth: 2,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              position: 'bottom',
+            },
+            tooltip: {
+              callbacks: {
+                label: (context) => {
+                  const value = Number(context.raw ?? 0);
+                  return `${context.label}: ${value}`;
+                },
+              },
+            },
+          },
+        },
+      }),
+    );
+  }
+
+  private destroyReportDetailCharts(): void {
+    for (const chart of this.reportChartInstances.values()) {
+      chart.destroy();
+    }
+
+    this.reportChartInstances.clear();
+  }
+
+  private getReportChartImageData(canvasId: string): string | null {
+    const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null;
+    return canvas ? canvas.toDataURL('image/png', 1) : null;
+  }
+
+  private async generateReportSignature(payload: string): Promise<string> {
+    const encodedPayload = new TextEncoder().encode(payload);
+    const digest = await crypto.subtle.digest('SHA-256', encodedPayload);
+    return Array.from(new Uint8Array(digest))
+      .slice(0, 12)
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('')
+      .toUpperCase();
+  }
+
+  private decorateReportPdfPages(document: any, title: string, timestamp: string, signature: string): void {
+    const totalPages = document.getNumberOfPages();
+    const pageWidth = document.internal.pageSize.getWidth();
+    const pageHeight = document.internal.pageSize.getHeight();
+
+    for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
+      document.setPage(pageNumber);
+      document.setFontSize(9);
+      document.text(this.title, 14, 8);
+      document.text(title, pageWidth - 14, 8, { align: 'right' });
+      document.text(`Generato: ${timestamp}`, 14, pageHeight - 8);
+      document.text(`Firma: ${signature}`, 14, pageHeight - 4);
+      document.text(`Pagina ${pageNumber}/${totalPages}`, pageWidth - 14, pageHeight - 4, { align: 'right' });
+    }
+  }
+
+  private isIphoneOrIpad(): boolean {
+    const userAgent = navigator.userAgent.toLowerCase();
+    return /iphone|ipad|ipod/.test(userAgent) || (userAgent.includes('macintosh') && 'ontouchend' in document);
+  }
+
   private ensureSelectedStaffMember(): void {
     const activeStaffMembers = this.activeStaffMembers();
     const currentSelectedId = this.saleForm.staffMemberId;
@@ -1384,6 +2353,8 @@ export class App implements OnInit, OnDestroy {
         this.employeeStaffMembers()[0]?.id ?? '';
     }
 
+    this.selectedAttendanceStaffMemberId.set(this.attendanceFilter.staffMemberId);
+
     this.onAttendanceStaffChange();
   }
 
@@ -1392,7 +2363,7 @@ export class App implements OnInit, OnDestroy {
   }
 
   private getAttendanceStaffMemberById(staffMemberId: string): StaffMember | undefined {
-    return this.employeeStaffMembers().find((staffMember) => staffMember.id === staffMemberId);
+    return this.staffMembers().find((staffMember) => staffMember.id === staffMemberId);
   }
 
   private getWeekdayKeyFromDate(isoDate: string): WeekdayKey {
@@ -1419,24 +2390,37 @@ export class App implements OnInit, OnDestroy {
   }
 
   private buildMonthlyAttendanceEntries(staffMemberId: string): EffectiveAttendanceEntry[] {
+    const { startDate, endDate } = this.getMonthDateRange(this.attendanceFilter.year, this.attendanceFilter.month);
+    return this.buildAttendanceEntriesForRange(staffMemberId, startDate, endDate);
+  }
+
+  private buildYearlyAttendanceEntries(staffMemberId: string): EffectiveAttendanceEntry[] {
+    const startDate = `${this.attendanceFilter.year}-01-01`;
+    const endDate = `${this.attendanceFilter.year}-12-31`;
+    return this.buildAttendanceEntriesForRange(staffMemberId, startDate, endDate);
+  }
+
+  private buildAttendanceEntriesForRange(
+    staffMemberId: string,
+    startDate: string,
+    endDate: string,
+  ): EffectiveAttendanceEntry[] {
     const staffMember = this.getAttendanceStaffMemberById(staffMemberId);
 
     if (!staffMember) {
       return [];
     }
 
-    const explicitEntries = this.filteredAttendanceEntries()
+    const explicitEntries = this.attendanceEntries()
       .filter((entry) => entry.staffMemberId === staffMemberId)
+      .filter((entry) => entry.entryDate >= startDate && entry.entryDate <= endDate)
       .map((entry) => ({ ...entry, isAutoGenerated: false as const }));
     const explicitEntryMap = new Map(explicitEntries.map((entry) => [entry.entryDate, entry]));
-    const year = Number.parseInt(this.attendanceFilter.year, 10);
-    const monthIndex = Number.parseInt(this.attendanceFilter.month, 10) - 1;
-    const lastDay = new Date(year, monthIndex + 1, 0);
     const employeeStartDate = staffMember.createdAt.slice(0, 10);
     const effectiveEntries: EffectiveAttendanceEntry[] = [];
+    const targetDates = this.getDateRange(startDate, endDate);
 
-    for (let day = 1; day <= lastDay.getDate(); day += 1) {
-      const isoDate = this.toInputDate(new Date(year, monthIndex, day));
+    for (const isoDate of targetDates) {
       const explicitEntry = explicitEntryMap.get(isoDate);
 
       if (explicitEntry) {
@@ -1486,7 +2470,7 @@ export class App implements OnInit, OnDestroy {
           summary.holidayDays += 1;
         }
 
-        if (entry.entryType === 'ferie') {
+        if (entry.entryType === 'ferie' && !this.isHolidayDate(entry.entryDate)) {
           summary.vacationDays += 1;
         }
 
@@ -1524,13 +2508,123 @@ export class App implements OnInit, OnDestroy {
     return dates;
   }
 
-  private findConflictingExplicitEntry(targetDates: string[], excludedEntryId: string | null): AttendanceEntry | undefined {
+  private getAttendanceTargetDates(entryType: AttendanceType, startDate: string, endDate: string): string[] {
+    const baseDates =
+      entryType === 'ferie' || entryType === 'malattia'
+        ? this.getDateRange(startDate, endDate)
+        : [startDate];
+
+    if (entryType !== 'ferie') {
+      return baseDates;
+    }
+
+    return baseDates.filter((isoDate) => !this.isHolidayDate(isoDate));
+  }
+
+  private async createAttendanceEntriesForDates(targetDates: string[], normalizedHours: number): Promise<AttendanceEntry[]> {
+    const createdEntries: AttendanceEntry[] = [];
+
+    for (const targetDate of targetDates) {
+      const createdEntry = await this.storeService.createAttendanceEntry({
+        staffMemberId: this.attendanceForm.staffMemberId,
+        entryDate: targetDate,
+        entryType: this.attendanceForm.entryType,
+        workedHours:
+          this.attendanceForm.entryType === 'permesso'
+            ? normalizedHours
+            : this.attendanceForm.entryType === 'lavoro'
+              ? normalizedHours
+              : 0,
+        notes: this.attendanceForm.notes,
+      });
+      createdEntries.push(createdEntry);
+    }
+
+    return createdEntries;
+  }
+
+  private findConflictingExplicitEntry(targetDates: string[], excludedEntryIds: string[]): AttendanceEntry | undefined {
     return this.attendanceEntries().find(
       (entry) =>
         entry.staffMemberId === this.attendanceForm.staffMemberId &&
         targetDates.includes(entry.entryDate) &&
-        entry.id !== excludedEntryId,
+        !excludedEntryIds.includes(entry.id),
     );
+  }
+
+  private getAttendanceEditEntries(entry: AttendanceEntry): AttendanceEntry[] {
+    if (entry.entryType !== 'ferie' && entry.entryType !== 'malattia') {
+      return [entry];
+    }
+
+    const candidateEntries = this.attendanceEntries()
+      .filter(
+        (candidateEntry) =>
+          candidateEntry.staffMemberId === entry.staffMemberId &&
+          candidateEntry.entryType === entry.entryType &&
+          candidateEntry.notes === entry.notes,
+      )
+      .sort((left, right) => left.entryDate.localeCompare(right.entryDate));
+    const entriesByDate = new Map(candidateEntries.map((candidateEntry) => [candidateEntry.entryDate, candidateEntry]));
+    const groupedEntries: AttendanceEntry[] = [entry];
+    let previousDate = entry.entryDate;
+    let nextDate = entry.entryDate;
+
+    while (true) {
+      const candidateDate = this.getNearestWorkingDate(previousDate, -1);
+
+      if (!candidateDate) {
+        break;
+      }
+
+      const candidateEntry = entriesByDate.get(candidateDate);
+
+      if (!candidateEntry) {
+        break;
+      }
+
+      groupedEntries.unshift(candidateEntry);
+      previousDate = candidateDate;
+    }
+
+    while (true) {
+      const candidateDate = this.getNearestWorkingDate(nextDate, 1);
+
+      if (!candidateDate) {
+        break;
+      }
+
+      const candidateEntry = entriesByDate.get(candidateDate);
+
+      if (!candidateEntry) {
+        break;
+      }
+
+      groupedEntries.push(candidateEntry);
+      nextDate = candidateDate;
+    }
+
+    return groupedEntries;
+  }
+
+  private getNearestWorkingDate(startDate: string, direction: -1 | 1): string | null {
+    let cursorDate = startDate;
+
+    for (let attempt = 0; attempt < 370; attempt += 1) {
+      cursorDate = this.shiftIsoDate(cursorDate, direction);
+
+      if (!this.isHolidayDate(cursorDate)) {
+        return cursorDate;
+      }
+    }
+
+    return null;
+  }
+
+  private shiftIsoDate(isoDate: string, dayOffset: number): string {
+    const shiftedDate = new Date(isoDate);
+    shiftedDate.setDate(shiftedDate.getDate() + dayOffset);
+    return this.toInputDate(shiftedDate);
   }
 
   private isCompanyClosureDate(isoDate: string): boolean {
@@ -1700,6 +2794,7 @@ export class App implements OnInit, OnDestroy {
 
   private resetAttendanceForm(): void {
     this.editingAttendanceEntryId.set(null);
+    this.editingAttendanceEntryIds.set([]);
     this.attendanceForm.entryDate = this.today();
     this.attendanceForm.endDate = this.today();
     this.attendanceForm.entryType = 'lavoro';

@@ -1,4 +1,4 @@
-<div class="app-page">
+<div class="app-page" [class.app-page-auth]="!isAuthenticated()">
   @if (feedback(); as currentFeedback) {
     <section class="feedback" [class.feedback-error]="currentFeedback.type === 'error'">
       <p>{{ currentFeedback.message }}</p>
@@ -52,28 +52,78 @@
             />
           </label>
 
-          <label class="field">
+          <div class="field">
             <span>Password</span>
-            <input
-              type="password"
-              name="authPassword"
-              [(ngModel)]="authForm.password"
-              autocomplete="current-password"
-              required
-            />
-          </label>
-
-          @if (authMode() === 'sign-up') {
-            <label class="field">
-              <span>Conferma password</span>
+            <div class="password-field-control">
               <input
                 type="password"
-                name="authConfirmPassword"
-                [(ngModel)]="authForm.confirmPassword"
-                autocomplete="new-password"
+                [attr.type]="showAuthPassword() ? 'text' : 'password'"
+                name="authPassword"
+                [(ngModel)]="authForm.password"
+                autocomplete="current-password"
+                [attr.autocomplete]="authMode() === 'sign-up' ? 'new-password' : 'current-password'"
                 required
               />
-            </label>
+              <button
+                class="password-toggle"
+                type="button"
+                (click)="toggleAuthPasswordVisibility()"
+                [attr.aria-label]="showAuthPassword() ? 'Nascondi password' : 'Mostra password'"
+              >
+                @if (showAuthPassword()) {
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M3 4.5L20 21.5M9.9 9.9a3 3 0 0 0 4.2 4.2M10.7 5.1A10.9 10.9 0 0 1 12 5c5.4 0 9.4 4.2 10 7-.2 1.1-1 2.7-2.4 4.2M6.6 6.6C4.2 8 2.5 10.4 2 12c.6 2.8 4.6 7 10 7 1.8 0 3.3-.5 4.7-1.2"
+                    />
+                  </svg>
+                } @else {
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M2 12c.6-2.8 4.6-7 10-7s9.4 4.2 10 7c-.6 2.8-4.6 7-10 7S2.6 14.8 2 12Z"
+                    />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                }
+              </button>
+            </div>
+          </div>
+
+          @if (authMode() === 'sign-up') {
+            <div class="field">
+              <span>Conferma password</span>
+              <div class="password-field-control">
+                <input
+                  type="password"
+                  [attr.type]="showAuthConfirmPassword() ? 'text' : 'password'"
+                  name="authConfirmPassword"
+                  [(ngModel)]="authForm.confirmPassword"
+                  autocomplete="new-password"
+                  [attr.autocomplete]="'new-password'"
+                  required
+                />
+                <button
+                  class="password-toggle"
+                  type="button"
+                  (click)="toggleAuthConfirmPasswordVisibility()"
+                  [attr.aria-label]="showAuthConfirmPassword() ? 'Nascondi conferma password' : 'Mostra conferma password'"
+                >
+                  @if (showAuthConfirmPassword()) {
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M3 4.5L20 21.5M9.9 9.9a3 3 0 0 0 4.2 4.2M10.7 5.1A10.9 10.9 0 0 1 12 5c5.4 0 9.4 4.2 10 7-.2 1.1-1 2.7-2.4 4.2M6.6 6.6C4.2 8 2.5 10.4 2 12c.6 2.8 4.6 7 10 7 1.8 0 3.3-.5 4.7-1.2"
+                      />
+                    </svg>
+                  } @else {
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        d="M2 12c.6-2.8 4.6-7 10-7s9.4 4.2 10 7c-.6 2.8-4.6 7-10 7S2.6 14.8 2 12Z"
+                      />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  }
+                </button>
+              </div>
+            </div>
           }
 
           <button class="button button-primary field-full" type="submit" [disabled]="isAuthProcessing()">
@@ -313,10 +363,10 @@
               </div>
             </div>
 
-            <div class="form-grid">
+            <div class="form-grid report-filter-grid">
               <label class="field">
                 <span>Mese</span>
-                <select name="reportMonth" [(ngModel)]="reportFilter.month">
+                <select name="reportMonth" [(ngModel)]="reportFilter.month" (ngModelChange)="onReportMonthYearChange()">
                   @for (month of reportMonthOptions; track month.value) {
                     <option [value]="month.value">{{ month.label }}</option>
                   }
@@ -325,12 +375,38 @@
 
               <label class="field">
                 <span>Anno</span>
-                <select name="reportYear" [(ngModel)]="reportFilter.year">
+                <select name="reportYear" [(ngModel)]="reportFilter.year" (ngModelChange)="onReportMonthYearChange()">
                   @for (year of availableReportYears(); track year) {
                     <option [value]="year">{{ year }}</option>
                   }
                 </select>
               </label>
+
+              <div class="field-full report-date-range-grid">
+                <label class="field report-date-field">
+                  <span>Da</span>
+                  <span class="report-date-button-value">{{ formatReportDateButton(reportFilter.startDate) }}</span>
+                  <input
+                    class="date-input-button report-date-native-input"
+                    type="date"
+                    name="reportStartDate"
+                    [(ngModel)]="reportFilter.startDate"
+                    (ngModelChange)="onReportDateRangeChange()"
+                  />
+                </label>
+
+                <label class="field report-date-field">
+                  <span>A</span>
+                  <span class="report-date-button-value">{{ formatReportDateButton(reportFilter.endDate) }}</span>
+                  <input
+                    class="date-input-button report-date-native-input"
+                    type="date"
+                    name="reportEndDate"
+                    [(ngModel)]="reportFilter.endDate"
+                    (ngModelChange)="onReportDateRangeChange()"
+                  />
+                </label>
+              </div>
 
               <button class="button button-primary field-full" type="button" (click)="exportPdf()">
                 Esporta PDF completo
@@ -386,47 +462,298 @@
             <div class="section-heading">
               <div>
                 <p class="eyebrow">Andamento</p>
-                <h3>Incassi per persona nel mese</h3>
+                <h3>Overview persone e dettaglio</h3>
               </div>
             </div>
 
-            <div class="report-list">
-              @if (reportRows().length) {
-                @for (row of reportRows(); track trackByStaffMember($index, row.staffMember)) {
-                  <div class="report-card">
-                    <div class="report-head">
-                      <div>
-                        <strong>{{ row.staffMember.fullName }}</strong>
-                        <p>
-                          {{ getRoleLabel(row.staffMember.role) }}
-                          @if (!row.staffMember.isActive) {
-                            · Nascosto
-                          }
-                        </p>
-                      </div>
-                      <strong>{{ row.totalAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
-                    </div>
-
-                    <div class="report-bar">
-                      <span [style.width]="getBarWidth(row.totalAmount)"></span>
-                    </div>
-
-                    <div class="report-metrics">
-                      <span>Regolare {{ row.totalRegular | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</span>
-                      <span>Test {{ row.totalTest | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</span>
-                      <span>Media {{ row.averageDaily | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</span>
-                      <span>Giorni {{ row.daysWorked }}</span>
-                    </div>
-
-                    <button class="button button-secondary report-export-button" type="button" (click)="exportPdf(row.staffMember)">
-                      PDF {{ row.staffMember.fullName }}
-                    </button>
-                  </div>
+            <div class="report-overview-grid">
+              @if (reportOverviewCards().length) {
+                @for (card of reportOverviewCards(); track trackByStaffMember($index, card.staffMember)) {
+                  <button
+                    class="report-overview-card"
+                    type="button"
+                    [class.report-overview-card-active]="selectedReportStaffMember()?.id === card.staffMember.id"
+                    [attr.aria-pressed]="selectedReportStaffMember()?.id === card.staffMember.id"
+                    [attr.aria-label]="'Apri report dettagliato per ' + card.staffMember.fullName"
+                    (click)="openReportStaffDetail(card.staffMember.id)"
+                  >
+                    <span class="report-overview-header">
+                      <strong>{{ card.staffMember.fullName }}</strong>
+                      <small>
+                        {{ getRoleLabel(card.staffMember.role) }}
+                        @if (!card.staffMember.isActive) {
+                          · Nascosto
+                        }
+                      </small>
+                    </span>
+                    <span class="report-overview-total">
+                      {{ card.totalAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}
+                    </span>
+                    <span class="report-overview-meta">Giorni lavorativi {{ card.workedDays }}</span>
+                    <span [class]="'report-trend-badge ' + getTrendClass(card.trendPercentage)">
+                      Trend {{ formatTrendValue(card.trendPercentage) }}
+                    </span>
+                  </button>
                 }
               } @else {
-                <p class="empty-copy">Nessun dato disponibile nel periodo selezionato.</p>
+                <p class="empty-copy">Nessuna persona disponibile per l'overview andamento.</p>
               }
             </div>
+
+            @if (selectedReportStaffMember(); as reportStaffMember) {
+              <section class="card card-embedded report-detail-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="eyebrow">Dettaglio Dipendente</p>
+                    <h3>{{ reportStaffMember.fullName }}</h3>
+                    <p class="section-copy">
+                      {{ getRoleLabel(reportStaffMember.role) }} · Periodo {{ reportDetailPeriodLabel() }}
+                    </p>
+                  </div>
+
+                  <div class="report-detail-actions">
+                    <button
+                      class="button button-secondary"
+                      type="button"
+                      (click)="exportDetailedReportPdf()"
+                      [disabled]="!reportDetailHasData()"
+                    >
+                      Export PDF
+                    </button>
+                    <button class="button button-ghost" type="button" (click)="closeReportStaffDetail()">
+                      Chiudi
+                    </button>
+                  </div>
+                </div>
+
+                <div class="form-grid report-detail-filter-grid">
+                  <label class="field">
+                    <span>Dal</span>
+                    <input
+                      type="date"
+                      name="reportDetailStartDate"
+                      [(ngModel)]="reportDetailFilter.startDate"
+                      (ngModelChange)="onReportDetailDateRangeChange()"
+                      required
+                    />
+                  </label>
+
+                  <label class="field">
+                    <span>Al</span>
+                    <input
+                      type="date"
+                      name="reportDetailEndDate"
+                      [(ngModel)]="reportDetailFilter.endDate"
+                      (ngModelChange)="onReportDetailDateRangeChange()"
+                      required
+                    />
+                  </label>
+
+                  <button class="button button-primary" type="button" (click)="exportPdf(reportStaffMember)">
+                    PDF incassi sintetico
+                  </button>
+                </div>
+
+                <div class="stats-grid report-detail-kpi-grid">
+                  <article class="summary-box">
+                    <span class="stat-label">Totale incassi</span>
+                    <strong>{{ reportDetailMetrics().totalAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+                  </article>
+
+                  <article class="summary-box">
+                    <span class="stat-label">Media giornaliera</span>
+                    <strong>{{ reportDetailMetrics().averageDaily | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</strong>
+                  </article>
+
+                  <article class="summary-box">
+                    <span class="stat-label">Giorni lavorati</span>
+                    <strong>{{ reportDetailMetrics().workedDays }}</strong>
+                  </article>
+
+                  <article class="summary-box">
+                    <span class="stat-label">Assenze</span>
+                    <strong>{{ reportDetailMetrics().absenceDays }}</strong>
+                  </article>
+
+                  <article class="summary-box">
+                    <span class="stat-label">Indice produttivita</span>
+                    <strong>{{ formatProductivityIndex(reportDetailMetrics().productivityIndex) }}</strong>
+                  </article>
+
+                  <article class="summary-box">
+                    <span class="stat-label">Ferie maturate stimate</span>
+                    <strong>{{ reportDetailMetrics().vacationAccrued }}</strong>
+                  </article>
+                </div>
+
+                @if (reportDetailHasData()) {
+                  <div class="report-detail-chart-grid">
+                    <article class="report-chart-card">
+                      <div class="section-heading">
+                        <div>
+                          <p class="eyebrow">Grafico</p>
+                          <h3>Incassi mensili</h3>
+                        </div>
+                      </div>
+                      <div class="report-chart-canvas-shell">
+                        <canvas
+                          id="report-monthly-chart"
+                          role="img"
+                          aria-label="Grafico a barre degli incassi mensili"
+                        ></canvas>
+                      </div>
+                    </article>
+
+                    <article class="report-chart-card">
+                      <div class="section-heading">
+                        <div>
+                          <p class="eyebrow">Grafico</p>
+                          <h3>Andamento giornaliero</h3>
+                        </div>
+                      </div>
+                      <div class="report-chart-canvas-shell">
+                        <canvas
+                          id="report-daily-chart"
+                          role="img"
+                          aria-label="Grafico lineare dell'andamento giornaliero"
+                        ></canvas>
+                      </div>
+                    </article>
+
+                    <article class="report-chart-card">
+                      <div class="section-heading">
+                        <div>
+                          <p class="eyebrow">Grafico</p>
+                          <h3>Presenze e assenze</h3>
+                        </div>
+                      </div>
+                      <div class="report-chart-canvas-shell report-chart-canvas-shell-pie">
+                        <canvas
+                          id="report-distribution-chart"
+                          role="img"
+                          aria-label="Grafico a torta della distribuzione tra presenze, ferie e malattie"
+                        ></canvas>
+                      </div>
+                    </article>
+                  </div>
+
+                  <div class="report-detail-table-grid">
+                    <article class="report-table-card">
+                      <div class="section-heading">
+                        <div>
+                          <p class="eyebrow">Tabella</p>
+                          <h3>Storico incassi mensili</h3>
+                        </div>
+                      </div>
+                      <div class="report-table-scroll">
+                        <table class="report-table">
+                          <thead>
+                            <tr>
+                              <th>Mese</th>
+                              <th>Totale</th>
+                              <th>Regolare</th>
+                              <th>Test</th>
+                              <th>Giorni</th>
+                              <th>Media</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            @for (row of reportDetailMonthlyRows(); track row.monthKey) {
+                              <tr>
+                                <td>{{ row.label }}</td>
+                                <td>{{ row.totalAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</td>
+                                <td>{{ row.regularAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</td>
+                                <td>{{ row.testAmount | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</td>
+                                <td>{{ row.workedDays }}</td>
+                                <td>{{ row.averageDaily | currency: currencyCode : 'symbol' : '1.2-2' : locale }}</td>
+                              </tr>
+                            }
+                          </tbody>
+                        </table>
+                      </div>
+                    </article>
+
+                    <article class="report-table-card">
+                      <div class="section-heading">
+                        <div>
+                          <p class="eyebrow">Tabella</p>
+                          <h3>Presenze giornaliere</h3>
+                        </div>
+                      </div>
+                      <div class="report-table-scroll">
+                        <table class="report-table">
+                          <thead>
+                            <tr>
+                              <th>Data</th>
+                              <th>Voce</th>
+                              <th>Ore</th>
+                              <th>Origine</th>
+                              <th>Note</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            @for (row of reportDetailAttendanceRows(); track row.isoDate + row.typeLabel) {
+                              <tr>
+                                <td>{{ row.label }}</td>
+                                <td>{{ row.typeLabel }}</td>
+                                <td>{{ row.workedHours }}</td>
+                                <td>{{ row.sourceLabel }}</td>
+                                <td>{{ row.notes }}</td>
+                              </tr>
+                            }
+                          </tbody>
+                        </table>
+                      </div>
+                    </article>
+
+                    <article class="report-table-card">
+                      <div class="section-heading">
+                        <div>
+                          <p class="eyebrow">Tabella</p>
+                          <h3>Ferie e malattia</h3>
+                        </div>
+                      </div>
+                      <div class="report-table-scroll">
+                        <table class="report-table">
+                          <thead>
+                            <tr>
+                              <th>Voce</th>
+                              <th>Valore</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td>Ferie maturate stimate</td>
+                              <td>{{ reportDetailMetrics().vacationAccrued }}</td>
+                            </tr>
+                            <tr>
+                              <td>Ferie utilizzate</td>
+                              <td>{{ reportDetailMetrics().vacationUsed }}</td>
+                            </tr>
+                            <tr>
+                              <td>Permessi</td>
+                              <td>{{ reportDetailMetrics().permitDays }}</td>
+                            </tr>
+                            <tr>
+                              <td>Malattia</td>
+                              <td>{{ reportDetailMetrics().sickDays }}</td>
+                            </tr>
+                            <tr>
+                              <td>Giorni lavorabili pianificati</td>
+                              <td>{{ reportDetailMetrics().plannedWorkingDays }}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </article>
+                  </div>
+                } @else {
+                  <p class="empty-copy">Nessun dato disponibile nel periodo selezionato per questo dipendente.</p>
+                }
+              </section>
+            } @else {
+              <p class="empty-copy">Seleziona una persona dall'overview per aprire il report dettagliato.</p>
+            }
           </article>
         </section>
       }
@@ -466,7 +793,7 @@
                   <select
                     name="attendanceFilterStaffMemberId"
                     [(ngModel)]="attendanceFilter.staffMemberId"
-                    (ngModelChange)="onAttendanceFilterStaffChange()"
+                    (ngModelChange)="onAttendanceFilterStaffChange($event)"
                   >
                     @for (staffMember of employeeStaffMembers(); track trackByStaffMember($index, staffMember)) {
                       <option [value]="staffMember.id">
@@ -553,16 +880,30 @@
                 <div class="list-block">
                   @if (attendanceSummaryByStaff().length) {
                     @for (row of attendanceSummaryByStaff(); track trackByStaffMember($index, row.staffMember)) {
-                      <div class="list-row list-row-sale">
-                        <div>
+                      <button
+                        class="list-row list-row-sale attendance-summary-row"
+                        type="button"
+                        [class.attendance-summary-row-active]="isSelectedAttendanceStaffMember(row.staffMember.id)"
+                        (click)="onAttendanceFilterStaffChange(row.staffMember.id)"
+                      >
+                        <span class="attendance-summary-main">
                           <strong>{{ row.staffMember.fullName }}</strong>
-                          <p>
+                          <span class="attendance-summary-copy">
                             Ore {{ row.summary.totalWorkedHours }} · Lavoro {{ row.summary.workDays }} · Ferie
                             {{ row.summary.vacationDays }} · Permessi {{ row.summary.permitDays }} · Malattia
                             {{ row.summary.sickDays }}
-                          </p>
-                        </div>
-                      </div>
+                          </span>
+                        </span>
+
+                        <span class="attendance-summary-year">
+                          <strong>Anno {{ attendanceFilter.year }}</strong>
+                          <span class="attendance-summary-copy">
+                            Ore {{ row.annualSummary.totalWorkedHours }} · Ferie {{ row.annualSummary.vacationDays }}
+                            · Permessi {{ row.annualSummary.permitDays }} · Malattia
+                            {{ row.annualSummary.sickDays }}
+                          </span>
+                        </span>
+                      </button>
                     }
                   } @else {
                     <p class="empty-copy">Nessun dipendente disponibile nel mese selezionato.</p>
@@ -787,17 +1128,6 @@
                 </select>
               </label>
 
-              <label class="field">
-                <span>Ore giornaliere</span>
-                <input
-                  type="number"
-                  name="defaultDailyHours"
-                  [(ngModel)]="staffForm.defaultDailyHours"
-                  min="0"
-                  step="0.5"
-                />
-              </label>
-
               <div class="field field-full">
                 <span>Turni settimanali</span>
                 <div class="weekly-shift-grid">
@@ -875,7 +1205,7 @@
                   <div class="list-row">
                     <div>
                       <strong>{{ staffMember.fullName }}</strong>
-                      <p>{{ getRoleLabel(staffMember.role) }} · {{ staffMember.defaultDailyHours }}h standard</p>
+                      <p>{{ getRoleLabel(staffMember.role) }}</p>
                     </div>
 
                     <div class="row-actions">
@@ -908,7 +1238,7 @@
                   <div class="list-row">
                     <div>
                       <strong>{{ staffMember.fullName }}</strong>
-                      <p>{{ getRoleLabel(staffMember.role) }} · {{ staffMember.defaultDailyHours }}h standard · Nascosto</p>
+                      <p>{{ getRoleLabel(staffMember.role) }} · Nascosto</p>
                     </div>
 
                     <button class="button button-secondary" type="button" (click)="restoreStaffMember(staffMember)">
